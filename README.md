@@ -68,6 +68,48 @@ Re-run `npx expo prebuild --platform android` only when native config changes; i
 
 Profiles live in **`eas.json`**: `development`, `development-simulator` (iOS sim), `preview`, `production`.
 
+## Tag-based preview deploy (GitHub Actions + EAS)
+
+**`main` does not auto-build.** A preview APK is produced when you tag a commit on `main` (same `v*` convention as `us-exe-web`) or run the workflow manually.
+
+### Release workflow
+
+1. Merge your PR into **`main`**
+2. Create a tag on **`main`**, e.g. `v1.0.0`
+3. Push the tag → Actions runs **Deploy preview APK (EAS)** → EAS builds the `preview` profile (internal APK)
+4. Open the finished job → **Summary** tab shows an **install QR code** and download link
+
+Tags on feature branches are **rejected** (same guard as the web deploy).
+
+CLI equivalent:
+
+```bash
+git checkout main && git pull
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### One-time GitHub setup
+
+In **Settings → Secrets and variables → Actions** for `us-exe-mobile`:
+
+| Secret | Purpose |
+|--------|---------|
+| `EXPO_TOKEN` | [expo.dev](https://expo.dev) → Account → Access tokens |
+| `EXPO_PUBLIC_SUPABASE_URL` | Same value as web `VITE_SUPABASE_URL` |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Same value as web `VITE_SUPABASE_PUBLISHABLE_KEY` |
+
+FCM / `google-services.json` must already be configured on Expo (see **`PUSH_SETUP.md`**).
+
+### Other deploy triggers
+
+| Trigger | What gets built |
+|---------|-----------------|
+| Tag `v*` on `main` | Tagged commit → preview APK |
+| Manual (Actions → Run workflow) | Latest `main` → preview APK |
+
+Local manual build (no CI): `npm run eas:preview:android`
+
 ## UI model
 
 - **No generic tab navbar**: an **orbit / arc launcher** swaps **sessions** — Desk · Wall · Notes · Jam · Letter · Pulse.
