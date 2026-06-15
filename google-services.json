@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "916483822213",
+    "project_id": "us-exe-mobile",
+    "storage_bucket": "us-exe-mobile.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:916483822213:android:45e571fd113bf9e277cfec",
+        "android_client_info": {
+          "package_name": "com.anonymous.usexemobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFn55Gl_J_QkRAm6KH5QF421Tu4D1R51k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
