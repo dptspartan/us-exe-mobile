@@ -1,30 +1,87 @@
 // @ts-nocheck — ported from web `NetworkUtils.js`; kept loose for parity with Supabase payloads.
 import { supabase } from '../lib/supabase';
+import { dataCache, cacheKeys, invalidateCoupleTableCache } from '../cache/dataCache';
+import {
+  getCachedSignedUrl,
+  setCachedSignedUrl,
+  clearSignedUrlCache,
+} from '../cache/imageUrlCache';
 
-/** Tables that sync live across both partners */
-const REALTIME_TABLES = [
-  'moods',
-  'todos',
-  'sticky_notes',
-  'photo_wall',
-  'link_drops',
-  'flip_letters',
-  'date_diary',
-];
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
-const coupleSyncChannels = new Map();
-const coupleBroadcastChannels = new Map();
+async function readThroughCache(key, fetcher, ttlMs = CACHE_TTL_MS) {
+  let cached = dataCache.getSync(key);
+  if (cached === null) cached = await dataCache.get(key);
 
-function getCoupleSyncEntry(coupleId) {
-  if (coupleSyncChannels.has(coupleId)) {
-    return coupleSyncChannels.get(coupleId);
+  if (cached !== null) {
+    const fresh = dataCache.isFresh(key);
+    if (!fresh || dataCache.isSoftStale(key)) {
+      void fetcher()
+        .then((data) => dataCache.set(key, data, ttlMs))
+        .catch(() => {});
+    }
+    return cached;
   }
 
-  const listeners = Object.fromEntries(REALTIME_TABLES.map((t) => [t, new Set()]));
+  const data = await fetcher();
+  await dataCache.set(key, data, ttlMs);
+  return data;
+}
 
-  const channel = supabase.channel(`couple-sync:${coupleId}`, {
-    config: { broadcast: { self: false } },
-  });
+function getActiveListenerCount(entry) {
+  let count = entry.doodleListeners.size;
+  for (const set of Object.values(entry.listeners)) {
+    count += set.size;
+  }
+  return count;
+}
+
+function teardownCoupleChannel(coupleId) {
+  const entry = coupleSyncChannels.get(coupleId);
+  if (!entry) return;
+  if (entry.reconnectTimer) {
+    clearTimeout(entry.reconnectTimer);
+    entry.reconnectTimer = null;
+  }
+  try {
+    supabase.removeChannel(entry.channel);
+  } catch {
+    /* channel may already be gone */
+  }
+  coupleSyncChannels.delete(coupleId);
+}
+
+function scheduleCoupleChannelReconnect(coupleId, entry) {
+  if (entry.reconnectTimer || entry.reconnecting) return;
+
+  const attempt = entry.reconnectAttempt ?? 0;
+  const delay = Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5));
+
+  entry.reconnectTimer = setTimeout(() => {
+    entry.reconnectTimer = null;
+    entry.reconnecting = true;
+    entry.reconnectAttempt = attempt + 1;
+
+    try {
+      supabase.removeChannel(entry.channel);
+    } catch {
+      /* ignore */
+    }
+
+    entry.channel = supabase.channel(`couple-sync:${coupleId}`, {
+      config: { broadcast: { self: false } },
+    });
+    attachCoupleChannelHandlers(entry, coupleId);
+
+    for (const table of REALTIME_TABLES) {
+      entry.listeners[table].forEach((fn) => fn({ __source: 'reconnect', table }));
+    }
+    entry.doodleListeners.forEach((fn) => fn({ event: 'reconnect', __source: 'reconnect' }));
+  }, delay);
+}
+
+function attachCoupleChannelHandlers(entry, coupleId) {
+  const { channel, listeners } = entry;
 
   for (const table of REALTIME_TABLES) {
     channel.on(
@@ -47,22 +104,72 @@ function getCoupleSyncEntry(coupleId) {
     listeners[table].forEach((fn) => fn({ __source: 'broadcast', table }));
   });
 
+  for (const evt of ['doodle_stroke', 'doodle_clear', 'doodle_undo']) {
+    channel.on('broadcast', { event: evt }, ({ payload }) => {
+      entry.doodleListeners.forEach((fn) => fn({ event: evt, ...payload }));
+    });
+  }
+
   channel.subscribe((status, err) => {
+    entry.status = status;
     if (__DEV__) {
       console.log(`[realtime couple-sync:${coupleId}]`, status, err?.message ?? '');
     }
-    if (status === 'CHANNEL_ERROR' || err) {
-      console.error('[realtime] channel error:', err?.message ?? status);
+    if (status === 'SUBSCRIBED') {
+      entry.reconnectAttempt = 0;
+      entry.reconnecting = false;
+    }
+    if (status === 'CHANNEL_ERROR' || status === 'CLOSED' || status === 'TIMED_OUT') {
+      console.error('[realtime] channel issue:', err?.message ?? status);
+      scheduleCoupleChannelReconnect(coupleId, entry);
     }
   });
+}
 
-  const entry = { channel, listeners, refCount: 0 };
+/** Tables that sync live across both partners */
+const REALTIME_TABLES = [
+  'moods',
+  'todos',
+  'sticky_notes',
+  'photo_wall',
+  'link_drops',
+  'flip_letters',
+  'date_diary',
+  'doodle_canvas',
+];
+
+const coupleSyncChannels = new Map();
+const coupleBroadcastChannels = new Map();
+
+function getCoupleSyncEntry(coupleId) {
+  if (coupleSyncChannels.has(coupleId)) {
+    return coupleSyncChannels.get(coupleId);
+  }
+
+  const listeners = Object.fromEntries(REALTIME_TABLES.map((t) => [t, new Set()]));
+
+  const entry = {
+    channel: supabase.channel(`couple-sync:${coupleId}`, {
+      config: { broadcast: { self: false } },
+    }),
+    listeners,
+    doodleListeners: new Set(),
+    reconnectAttempt: 0,
+    reconnecting: false,
+    reconnectTimer: null,
+    status: 'idle',
+  };
+
+  attachCoupleChannelHandlers(entry, coupleId);
   coupleSyncChannels.set(coupleId, entry);
   return entry;
 }
 
 function broadcastDataRefresh(coupleId, table) {
   if (!coupleId || !REALTIME_TABLES.includes(table)) return;
+  void invalidateCoupleTableCache(coupleId, table);
+  if (table === 'photo_wall') clearSignedUrlCache();
+
   const entry = getCoupleSyncEntry(coupleId);
   const transmit = () =>
     entry.channel.send({
@@ -102,22 +209,22 @@ export const networkUtility = {
    * @param {string} userId - Pass the current authenticated user's ID
    */
   async getCoupleProfile(userId) {
-    try {
-      if (!userId) throw new Error("User ID parameter is missing.");
+    if (!userId) return null;
+    return readThroughCache(cacheKeys.coupleProfile(userId), async () => {
+      try {
+        const { data, error } = await supabase
+          .from('couples')
+          .select('*')
+          .or(`partner_1_id.eq.${userId},partner_2_id.eq.${userId}`)
+          .maybeSingle();
 
-      // Explicitly check both columns inside the query itself
-      const { data, error } = await supabase
-        .from('couples')
-        .select('*')
-        .or(`partner_1_id.eq.${userId},partner_2_id.eq.${userId}`)
-        .maybeSingle(); // Cleanly returns null if not paired yet
-
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error("NetworkUtility [getCoupleProfile] failed:", error.message);
-      return null;
-    }
+        if (error) throw error;
+        return data;
+      } catch (error) {
+        console.error('NetworkUtility [getCoupleProfile] failed:', error.message);
+        return null;
+      }
+    });
   },
 
   /**
@@ -146,6 +253,11 @@ export const networkUtility = {
   async signOut() {
     const { error } = await supabase.auth.signOut();
     if (error) console.error("Error signing out:", error.message);
+    clearSignedUrlCache();
+    await dataCache.clearAll();
+    for (const coupleId of [...coupleSyncChannels.keys()]) {
+      teardownCoupleChannel(coupleId);
+    }
   },
 
   /**
@@ -195,51 +307,54 @@ export const networkUtility = {
   },
 
   async getMoods(coupleId) {
-    const { data, error } = await supabase
-      .from('moods')
-      .select('*')
-      .eq('couple_id', coupleId);
-    if (error) {
-      console.error("Error fetching moods:", error.message);
-      return [];
-    }
-    return data || [];
+    return readThroughCache(cacheKeys.moods(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('moods')
+        .select('*')
+        .eq('couple_id', coupleId);
+      if (error) {
+        console.error("Error fetching moods:", error.message);
+        return [];
+      }
+      return data || [];
+    });
   },
   
   async getNamesFromCouple(coupleId, currentUserId) {
-    try {
-      const { data, error } = await supabase
-        .from('couples')
-        .select('partner_1_id, partner_2_id, partner_1_name, partner_2_name') // <-- Swap these with your exact column names if different
-        .eq('id', coupleId)
-        .single();
+    return readThroughCache(cacheKeys.names(coupleId, currentUserId), async () => {
+      try {
+        const { data, error } = await supabase
+          .from('couples')
+          .select('partner_1_id, partner_2_id, partner_1_name, partner_2_name')
+          .eq('id', coupleId)
+          .single();
   
-      if (error) throw error;
-      if (!data) return 'Partner';
+        if (error) throw error;
+        if (!data) return 'Partner';
   
-      // If you are user 1, return user 2's name. Otherwise, return user 1's name.
-      const isUser1 = data.partner_1_id === currentUserId;
-      const partnerName = isUser1 ? data.partner_2_name : data.partner_1_name;
-      const myName = isUser1 ? data.partner_1_name : data.partner_2_name;
-      return {partnerName: partnerName, myName: myName};
-      
-      
-    } catch (error) {
-      console.error("Error fetching partner name from couples:", error.message);
-      return {partnerName: 'Partner', myName: 'You'}; // Safe fallback so your UI doesn't crash if the network hiccups
-    }
+        const isUser1 = data.partner_1_id === currentUserId;
+        const partnerName = isUser1 ? data.partner_2_name : data.partner_1_name;
+        const myName = isUser1 ? data.partner_1_name : data.partner_2_name;
+        return { partnerName: partnerName, myName: myName };
+      } catch (error) {
+        console.error("Error fetching partner name from couples:", error.message);
+        return { partnerName: 'Partner', myName: 'You' };
+      }
+    });
   },
 
   async getFlipLetters(coupleId) {
-    const { data, error } = await supabase
-      .from('flip_letters')
-      .select('*')
-      .eq('couple_id', coupleId);
-    if (error) {
-      console.error("Error fetching flip letters:", error.message);
-      return [];
-    }
-    return data || [];
+    return readThroughCache(cacheKeys.flipLetters(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('flip_letters')
+        .select('*')
+        .eq('couple_id', coupleId);
+      if (error) {
+        console.error("Error fetching flip letters:", error.message);
+        return [];
+      }
+      return data || [];
+    });
   },
 
   async createTodo(coupleId, task) {
@@ -301,30 +416,37 @@ export const networkUtility = {
   },
 
   async getPhotos(coupleId) {
-    const { data, error } = await supabase
-      .from('photo_wall')
-      .select('*')
-      .eq('couple_id', coupleId)
-      .order('created_at', { ascending: false });
-    if (error) {
-      console.error("Error fetching photos:", error.message);
-      return [];
-    }
-    return data || [];
+    return readThroughCache(cacheKeys.photos(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('photo_wall')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .order('created_at', { ascending: false });
+      if (error) {
+        console.error("Error fetching photos:", error.message);
+        return [];
+      }
+      return data || [];
+    });
   },
 
   async getPhotosWithUrls(coupleId, expiresIn = 3600) {
-    const photos = await this.getPhotos(coupleId);
-    const withUrls = await Promise.all(
-      photos.map(async (photo) => {
-        const url = await this.getPhotoSignedUrl(photo.storage_path, expiresIn);
-        return { ...photo, imageUrl: url };
-      })
-    );
-    return withUrls.filter((p) => p.imageUrl);
+    return readThroughCache(cacheKeys.photosWithUrls(coupleId), async () => {
+      const photos = await this.getPhotos(coupleId);
+      const withUrls = await Promise.all(
+        photos.map(async (photo) => {
+          const url = await this.getPhotoSignedUrl(photo.storage_path, expiresIn);
+          return { ...photo, imageUrl: url };
+        })
+      );
+      return withUrls.filter((p) => p.imageUrl);
+    });
   },
 
   async getPhotoSignedUrl(storagePath, expiresIn = 3600) {
+    const cached = getCachedSignedUrl(storagePath);
+    if (cached) return cached;
+
     const { data, error } = await supabase.storage
       .from('memories')
       .createSignedUrl(storagePath, expiresIn);
@@ -332,6 +454,7 @@ export const networkUtility = {
       console.error("Error creating signed URL:", error.message);
       return null;
     }
+    setCachedSignedUrl(storagePath, data.signedUrl, expiresIn);
     return data.signedUrl;
   },
 
@@ -348,14 +471,11 @@ export const networkUtility = {
 
     const entry = getCoupleSyncEntry(coupleId);
     entry.listeners[table].add(onChange);
-    entry.refCount += 1;
 
     return () => {
       entry.listeners[table].delete(onChange);
-      entry.refCount -= 1;
-      if (entry.refCount <= 0) {
-        supabase.removeChannel(entry.channel);
-        coupleSyncChannels.delete(coupleId);
+      if (getActiveListenerCount(entry) === 0) {
+        teardownCoupleChannel(coupleId);
       }
     };
   },
@@ -369,16 +489,18 @@ export const networkUtility = {
    * Fetches all active, uncleared sticky notes left by the OTHER partner.
    */
   async getActiveIncomingNotes(coupleId, currentUserId) {
-    const { data, error } = await supabase
-      .from('sticky_notes')
-      .select('*')
-      .eq('couple_id', coupleId)
-      .neq('author_id', currentUserId)
-      .eq('is_cleared', false)
-      .order('created_at', { ascending: true });
+    return readThroughCache(cacheKeys.stickyNotes(coupleId, currentUserId), async () => {
+      const { data, error } = await supabase
+        .from('sticky_notes')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .neq('author_id', currentUserId)
+        .eq('is_cleared', false)
+        .order('created_at', { ascending: true });
 
-    if (error) console.error("Error fetching sticky notes:", error.message);
-    return data || [];
+      if (error) console.error("Error fetching sticky notes:", error.message);
+      return data || [];
+    });
   },
 
   /**
@@ -400,26 +522,29 @@ export const networkUtility = {
    * Fetches all current items on the shared to-do list.
    */
   async getTodos(coupleId) {
-    const { data, error } = await supabase
-      .from('todos')
-      .select('*')
-      .eq('couple_id', coupleId)
-      .order('created_at', { ascending: false });
+    return readThroughCache(cacheKeys.todos(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('todos')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .order('created_at', { ascending: false });
 
-    if (error) console.error("Error fetching to-dos:", error.message);
-    return data || [];
+      if (error) console.error("Error fetching to-dos:", error.message);
+      return data || [];
+    });
   },
 
   /**
    * Uploads an image file to the private storage bucket and logs it to the photo wall.
    */
-  async uploadPhotoToWall(coupleId, userId, file, caption = "") {
+  async uploadPhotoToWall(coupleId, userId, file, caption = "", sourceType = "photo") {
     try {
       const isRnPick =
         file &&
         typeof file === 'object' &&
         'uri' in file &&
         typeof file.uri === 'string';
+      const isArrayBuffer = file instanceof ArrayBuffer;
 
       let filePath;
       /** @type {Blob | ArrayBuffer | File} */
@@ -427,7 +552,11 @@ export const networkUtility = {
       /** @type {{ contentType?: string }} */
       let uploadOpts = {};
 
-      if (isRnPick) {
+      if (isArrayBuffer) {
+        uploadOpts.contentType = 'image/png';
+        uploadPayload = file;
+        filePath = `${coupleId}/${Date.now()}.png`;
+      } else if (isRnPick) {
         const mime =
           file.mimeType ||
           (typeof file.uri === 'string' && file.uri.endsWith('.png')
@@ -468,7 +597,8 @@ export const networkUtility = {
           couple_id: coupleId,
           uploaded_by: userId,
           storage_path: filePath,
-          caption: caption
+          caption: caption,
+          source_type: sourceType,
         })
         .select();
 
@@ -510,18 +640,20 @@ export const networkUtility = {
    * Active jam sessions (meet / teleparty / spotify) — one open row per type.
    */
   async getActiveJamSessions(coupleId) {
-    const { data, error } = await supabase
-      .from('link_drops')
-      .select('*')
-      .eq('couple_id', coupleId)
-      .eq('is_open', true)
-      .order('created_at', { ascending: false });
+    return readThroughCache(cacheKeys.jamSessions(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('link_drops')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .eq('is_open', true)
+        .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error("Error fetching jam sessions:", error.message);
-      return [];
-    }
-    return data || [];
+      if (error) {
+        console.error("Error fetching jam sessions:", error.message);
+        return [];
+      }
+      return data || [];
+    });
   },
 
   async closeJamSessionsOfType(coupleId, sessionType) {
@@ -672,9 +804,10 @@ export const networkUtility = {
   },
   
   async getDiaryDates(coupleId) {
-    const { data, error } = await supabase
-      .from('date_diary')
-      .select(`
+    return readThroughCache(cacheKeys.diaryDates(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('date_diary')
+        .select(`
         *,
         date_diary_notes (
           id,
@@ -695,37 +828,38 @@ export const networkUtility = {
           )
         )
       `)
-      .eq('couple_id', coupleId)
-      .order('scheduled_date', { ascending: false });
+        .eq('couple_id', coupleId)
+        .order('scheduled_date', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching diary dates:', error.message);
-      throw error;
-    }
+      if (error) {
+        console.error('Error fetching diary dates:', error.message);
+        throw error;
+      }
 
-    const rows = data || [];
-    const enriched = await Promise.all(
-      rows.map(async (date) => {
-        const photos = await Promise.all(
-          (date.date_diary_photos || []).map(async (link) => {
-            const wall = link.photo_wall;
-            if (!wall) return null;
-            const imageUrl = await this.getPhotoSignedUrl(wall.storage_path);
-            if (!imageUrl) return null;
-            return { ...link, photo_wall: { ...wall, imageUrl } };
-          })
-        );
-        return {
-          ...date,
-          notes: (date.date_diary_notes || []).sort(
-            (a, b) => new Date(a.created_at) - new Date(b.created_at)
-          ),
-          photos: photos.filter(Boolean),
-        };
-      })
-    );
+      const rows = data || [];
+      const enriched = await Promise.all(
+        rows.map(async (date) => {
+          const photos = await Promise.all(
+            (date.date_diary_photos || []).map(async (link) => {
+              const wall = link.photo_wall;
+              if (!wall) return null;
+              const imageUrl = await this.getPhotoSignedUrl(wall.storage_path);
+              if (!imageUrl) return null;
+              return { ...link, photo_wall: { ...wall, imageUrl } };
+            })
+          );
+          return {
+            ...date,
+            notes: (date.date_diary_notes || []).sort(
+              (a, b) => new Date(a.created_at) - new Date(b.created_at)
+            ),
+            photos: photos.filter(Boolean),
+          };
+        })
+      );
 
-    return enriched;
+      return enriched;
+    });
   },
 
   async createDiaryDate(coupleId, payload) {
@@ -866,31 +1000,227 @@ export const networkUtility = {
 
   /** Map photo_wall id → date label for polaroid pins on the wall. */
   async getPhotoDateTags(coupleId) {
-    const { data, error } = await supabase
-      .from('date_diary')
-      .select(
-        `
+    return readThroughCache(cacheKeys.photoDateTags(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('date_diary')
+        .select(
+          `
         title,
         scheduled_date,
         date_diary_photos ( photo_id )
       `
-      )
-      .eq('couple_id', coupleId);
+        )
+        .eq('couple_id', coupleId);
 
-    if (error) {
-      console.error('Error fetching photo date tags:', error.message);
-      return {};
-    }
-
-    const map = {};
-    for (const diary of data || []) {
-      for (const link of diary.date_diary_photos || []) {
-        map[link.photo_id] = {
-          title: diary.title,
-          scheduled_date: diary.scheduled_date,
-        };
+      if (error) {
+        console.error('Error fetching photo date tags:', error.message);
+        return {};
       }
+
+      const map = {};
+      for (const diary of data || []) {
+        for (const link of diary.date_diary_photos || []) {
+          map[link.photo_id] = {
+            title: diary.title,
+            scheduled_date: diary.scheduled_date,
+          };
+        }
+      }
+      return map;
+    });
+  },
+
+  async getDoodleCanvas(coupleId, userId) {
+    return readThroughCache(cacheKeys.doodleCanvas(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('doodle_canvas')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error fetching doodle canvas:', error.message);
+        return null;
+      }
+
+      if (data) return data;
+
+      const { data: inserted, error: insertError } = await supabase
+        .from('doodle_canvas')
+        .insert({
+          couple_id: coupleId,
+          strokes: [],
+          version: 1,
+          updated_by: userId,
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        if (insertError.code === '23505') {
+          const { data: existing } = await supabase
+            .from('doodle_canvas')
+            .select('*')
+            .eq('couple_id', coupleId)
+            .single();
+          return existing;
+        }
+        console.error('Error creating doodle canvas:', insertError.message);
+        return null;
+      }
+      return inserted;
+    });
+  },
+
+  async persistDoodleCanvas(coupleId, userId, strokes, expectedVersion) {
+    const { data: current } = await supabase
+      .from('doodle_canvas')
+      .select('*')
+      .eq('couple_id', coupleId)
+      .maybeSingle();
+
+    if (!current) {
+      const { data, error } = await supabase
+        .from('doodle_canvas')
+        .insert({
+          couple_id: coupleId,
+          strokes,
+          version: 1,
+          updated_by: userId,
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      broadcastDataRefresh(coupleId, 'doodle_canvas');
+      return { data, conflict: false };
     }
-    return map;
+
+    if (current.version !== expectedVersion) {
+      return { data: current, conflict: true };
+    }
+
+    const { data, error } = await supabase
+      .from('doodle_canvas')
+      .update({
+        strokes,
+        version: expectedVersion + 1,
+        updated_by: userId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('couple_id', coupleId)
+      .eq('version', expectedVersion)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!data) {
+      const { data: remote } = await supabase
+        .from('doodle_canvas')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .single();
+      return { data: remote, conflict: true };
+    }
+
+    broadcastDataRefresh(coupleId, 'doodle_canvas');
+    return { data, conflict: false };
+  },
+
+  broadcastDoodleEvent(coupleId, event, payload) {
+    const entry = getCoupleSyncEntry(coupleId);
+    const transmit = () =>
+      entry.channel.send({
+        type: 'broadcast',
+        event,
+        payload,
+      });
+
+    if (entry.channel.state === 'joined') {
+      transmit();
+      return;
+    }
+
+    entry.channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') transmit();
+    });
+  },
+
+  subscribeToDoodleEvents(coupleId, onEvent) {
+    const entry = getCoupleSyncEntry(coupleId);
+    entry.doodleListeners.add(onEvent);
+
+    return () => {
+      entry.doodleListeners.delete(onEvent);
+      if (getActiveListenerCount(entry) === 0) {
+        teardownCoupleChannel(coupleId);
+      }
+    };
+  },
+
+  async saveDoodleSnapshot(coupleId, userId, pngBytes, caption = '') {
+    return this.uploadPhotoToWall(coupleId, userId, pngBytes, caption, 'doodle');
+  },
+
+  async getSavedDoodles(coupleId, expiresIn = 3600) {
+    return readThroughCache(cacheKeys.savedDoodles(coupleId), async () => {
+      const { data, error } = await supabase
+        .from('photo_wall')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .eq('source_type', 'doodle')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching saved doodles:', error.message);
+        return [];
+      }
+
+      const withUrls = await Promise.all(
+        (data || []).map(async (row) => {
+          const url = await this.getPhotoSignedUrl(row.storage_path, expiresIn);
+          return url ? { ...row, imageUrl: url } : null;
+        })
+      );
+      return withUrls.filter(Boolean);
+    });
+  },
+
+  /** Warm common couple reads after login so modules render from cache first. */
+  async prefetchCoupleData(coupleId, userId) {
+    if (!coupleId || !userId) return;
+    await Promise.allSettled([
+      this.getMoods(coupleId),
+      this.getTodos(coupleId),
+      this.getFlipLetters(coupleId),
+      this.getPhotosWithUrls(coupleId),
+      this.getDiaryDates(coupleId),
+      this.getActiveJamSessions(coupleId),
+      this.getNamesFromCouple(coupleId, userId),
+      this.getActiveIncomingNotes(coupleId, userId),
+      this.getPhotoDateTags(coupleId),
+      this.getDoodleCanvas(coupleId, userId),
+    ]);
+  },
+
+  async getUserDisplayName(coupleId, userId) {
+    const names = await this.getNamesFromCouple(coupleId, userId);
+    if (typeof names === 'object' && names !== null) {
+      return names.myName || 'You';
+    }
+    return 'Partner';
+  },
+
+  async getPartnerDisplayName(coupleId, userId) {
+    const names = await this.getNamesFromCouple(coupleId, userId);
+    if (typeof names === 'object' && names !== null) {
+      return names.partnerName || 'Partner';
+    }
+    return 'Partner';
+  },
+
+  resolveSaverName(coupleId, currentUserId, uploadedBy, names) {
+    if (uploadedBy === currentUserId) return names.myName || 'You';
+    return names.partnerName || 'Partner';
   },
 };

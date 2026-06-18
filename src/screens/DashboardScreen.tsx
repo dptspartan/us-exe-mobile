@@ -10,7 +10,8 @@ import { usePushDeepLink } from '../hooks/usePushDeepLink';
 import { hexAlpha } from '../utils/theme';
 import { VibeBackground } from '../components/VibeBackground';
 import { RadialSessionNav, stageSafeBottomInset } from '../components/RadialSessionNav';
-import type { SessionId } from '../components/sessionTiles';
+import { SessionStage } from '../components/SessionStage';
+import { SESSION_STAGE_PADDING_X, type SessionId } from '../components/sessionTiles';
 import { MoodPickerOrb } from '../components/MoodPickerOrb';
 import { StickyNotesTray } from '../components/StickyNotesTray';
 import { GoalsModule } from '../components/GoalsModule';
@@ -58,8 +59,8 @@ export function DashboardScreen() {
     })();
   }, [coupleId, user?.id]);
 
-  function renderModule() {
-    switch (session) {
+  function renderModule(id: SessionId) {
+    switch (id) {
       case 'desk':
         return <GoalsModule />;
       case 'memories':
@@ -104,22 +105,30 @@ export function DashboardScreen() {
 
           {user?.id ? <PushSetupBanner userId={user.id} /> : null}
 
-          <View style={[styles.stage, { paddingBottom: stageSafeBottomInset(insets.bottom) }]}>
-            {renderModule()}
+          <View
+            style={[
+              styles.stage,
+              {
+                paddingBottom: stageSafeBottomInset(insets.bottom),
+                paddingHorizontal: SESSION_STAGE_PADDING_X[session],
+              },
+            ]}
+          >
+            <SessionStage session={session}>{renderModule}</SessionStage>
           </View>
         </SafeAreaView>
 
         <RadialSessionNav active={session} onSelect={setSession} accent={accent} />
-        <StickyNotesTray partnerName={names.partnerName} />
-        <HugRequestModal />
         <FloatingHeartsOverlay />
+        <HugRequestModal />
+        <StickyNotesTray partnerName={names.partnerName} />
       </View>
     </SparksProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0a0a0c' },
+  root: { flex: 1, backgroundColor: '#0a0a0c', position: 'relative' },
   safe: { flex: 1 },
   header: {
     paddingHorizontal: 16,
@@ -143,5 +152,5 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   byeTxt: { fontSize: 10, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase', color: '#fca5a5' },
-  stage: { flex: 1, paddingHorizontal: 12, paddingTop: 8 },
+  stage: { flex: 1, paddingTop: 8 },
 });

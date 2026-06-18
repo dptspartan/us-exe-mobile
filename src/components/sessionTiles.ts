@@ -19,3 +19,13 @@ export const SESSION_TILES: SessionTile[] = [
   { id: 'letter', title: 'Letter', icon: 'mail-outline' },
   { id: 'sparks', title: 'Sparks', icon: 'sparkles-outline' },
 ];
+
+/** Horizontal inset for the module stage — sparks is full-bleed. */
+export const SESSION_STAGE_PADDING_X: Record<SessionId, number> = {
+  desk: 12,
+  memories: 12,
+  notes: 12,
+  jam: 12,
+  letter: 12,
+  sparks: 0,
+};

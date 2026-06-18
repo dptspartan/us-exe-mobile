@@ -30,6 +30,13 @@
             "buildArchs": ["armeabi-v7a", "arm64-v8a"]
           }
         }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Us.exe to save doodles to your photo library.",
+          "savePhotosPermission": "Allow Us.exe to save doodles to your photo library."
+        }
       ]
     ],
     "ios": {

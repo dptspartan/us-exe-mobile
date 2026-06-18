@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   Image,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -11,17 +12,28 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { BlurView } from 'expo-blur';
+import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { networkUtility } from '../api/network';
 import { useCoupleRealtime } from '../hooks/useCoupleRealtime';
 import { useApp } from '../context/AppContext';
 import { useVibeTheme } from '../hooks/useVibeTheme';
+import { hexAlpha } from '../utils/theme';
 
-type Photo = { id: string; imageUrl: string; caption?: string; storage_path: string };
+type Photo = {
+  id: string;
+  imageUrl: string;
+  caption?: string;
+  storage_path: string;
+  source_type?: string;
+  uploaded_by?: string;
+  created_at?: string;
+};
 
-const FAB_SIZE = 58;
-/** Extra lift so controls sit visibly above stacked polaroid bottom curve */
-const BOTTOM_BTN_INSET = 14;
+const ACTION_GAP = 10;
+const DECK_MS = 440;
+const DECK_RISE_DELAY = 70;
 
 type StackParts = {
   opacity: number;
@@ -61,7 +73,8 @@ function stackParts(index: number, total: number, active: number, cardW: number)
 }
 
 export function MemoriesModule() {
-  const { accent, text, textMuted } = useVibeTheme();
+  const { accent, text, textMuted, cardBorder, palette } = useVibeTheme();
+  const sheetBg = hexAlpha(palette.deepMine, 0.96);
   const { width: screenW } = useWindowDimensions();
   const { user, coupleId } = useApp();
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -71,6 +84,9 @@ export function MemoriesModule() {
   const [caption, setCaption] = useState('');
   const [picked, setPicked] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Photo | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [names, setNames] = useState({ myName: 'You', partnerName: 'Partner' });
 
   const polaroidSizing = useMemo(() => {
     const W = Math.min(Math.max(screenW - 104, 272), 340);
@@ -94,6 +110,23 @@ export function MemoriesModule() {
     currentUserId: user?.id,
   });
   useCoupleRealtime(coupleId, 'date_diary', load);
+
+  useEffect(() => {
+    if (!coupleId || !user?.id) return;
+    void networkUtility.getNamesFromCouple(coupleId, user.id).then((n) => {
+      if (n && typeof n === 'object') {
+        setNames({ myName: n.myName || 'You', partnerName: n.partnerName || 'Partner' });
+      }
+    });
+  }, [coupleId, user?.id]);
+
+  const saverLabel = useCallback(
+    (uploadedBy?: string) => {
+      if (!uploadedBy || !user?.id) return 'Someone';
+      return networkUtility.resolveSaverName(coupleId!, user.id, uploadedBy, names);
+    },
+    [coupleId, user?.id, names],
+  );
 
   const slideAway = useRef(new Animated.Value(0)).current;
   const nextRise = useRef(new Animated.Value(0)).current;
@@ -147,14 +180,15 @@ export function MemoriesModule() {
     Animated.parallel([
       Animated.timing(slideAway, {
         toValue: 1,
-        duration: 240,
-        easing: Easing.out(Easing.cubic),
+        duration: DECK_MS,
+        easing: Easing.bezier(0.33, 0, 0.2, 1),
         useNativeDriver: true,
       }),
       Animated.timing(nextRise, {
         toValue: 1,
-        duration: 240,
-        easing: Easing.out(Easing.cubic),
+        duration: DECK_MS + 100,
+        delay: DECK_RISE_DELAY,
+        easing: Easing.bezier(0.22, 1, 0.36, 1),
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
@@ -167,35 +201,48 @@ export function MemoriesModule() {
     });
   }, [photos.length, active, polaroidSizing.W, slideAway, nextRise]);
 
-  async function wipe(p: Photo) {
-    Alert.alert('Remove memory?', 'Deletes the file and row on the server.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          const ok = await networkUtility.wipePhotoFromServer(p.id, p.storage_path, coupleId);
-          if (ok) {
-            setPhotos((prev) => prev.filter((x) => x.id !== p.id));
-            setActive(0);
-          }
-        },
-      },
-    ]);
+  function requestDelete(p: Photo) {
+    setDeleteTarget(p);
+  }
+
+  async function commitDelete() {
+    if (!deleteTarget || !coupleId) return;
+    setDeleting(true);
+    try {
+      const ok = await networkUtility.wipePhotoFromServer(
+        deleteTarget.id,
+        deleteTarget.storage_path,
+        coupleId,
+      );
+      if (ok) {
+        setPhotos((prev) => prev.filter((x) => x.id !== deleteTarget.id));
+        setActive(0);
+      }
+    } finally {
+      setDeleting(false);
+      setDeleteTarget(null);
+    }
   }
 
   const clusterBleedX = 52;
   const clusterBleedStackY = 100;
   const clusterW = polaroidSizing.W + clusterBleedX;
   const stackClusterH = polaroidSizing.H + clusterBleedStackY;
-  const previewClusterMinH = polaroidSizing.H + 268;
   const stackCardLeft = Math.round((clusterW - polaroidSizing.W) / 2);
   const stackCardTop = Math.round((stackClusterH - polaroidSizing.H) / 2);
 
   /** Used in render tree so native driver binds during animation */
   const slideXI = slideAway.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, -Math.round(Math.min(polaroidSizing.W * 0.34, 96))],
+    outputRange: [0, -Math.round(Math.min(polaroidSizing.W * 0.38, 112))],
+  });
+  const slideRotI = slideAway.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '-12deg'],
+  });
+  const slideOpacityI = slideAway.interpolate({
+    inputRange: [0, 0.55, 1],
+    outputRange: [1, 0.9, 0.5],
   });
 
   const nPhotos = photos.length;
@@ -205,63 +252,119 @@ export function MemoriesModule() {
     nPhotos > 1
       ? nextRise.interpolate({
           inputRange: [0, 1],
-          outputRange: [incomingLayoutMemo.ty - 52, incomingLayoutMemo.ty],
+          outputRange: [incomingLayoutMemo.ty - 68, incomingLayoutMemo.ty],
+        })
+      : null;
+  const riseScaleI =
+    nPhotos > 1
+      ? nextRise.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.92, 1],
         })
       : null;
 
   const topPhoto = photos.length ? photos[Math.min(active, photos.length - 1)] : null;
 
   return (
-    <View style={[styles.wrap, { paddingBottom: FAB_SIZE + BOTTOM_BTN_INSET + 10 }]}>
-      <Text style={[styles.title, { color: text }]}>Polaroid stack</Text>
-      <Text style={[styles.sub, { color: textMuted }]}>Tap the top polaroid · it slides aside as the next one rises onto the pile</Text>
+    <View style={styles.wrap}>
+      {!preview ? (
+        <View style={styles.actionRailOuter} pointerEvents="box-none">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Delete current photo"
+            disabled={photos.length === 0}
+            onPress={() => {
+              if (topPhoto) requestDelete(topPhoto);
+            }}
+            style={[
+              styles.actionBtn,
+              styles.actionBtnDelete,
+              photos.length === 0 && styles.actionBtnDisabled,
+            ]}
+          >
+            <Text style={styles.actionBtnDeleteTxt}>Delete</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add photo"
+            onPress={pickImage}
+            style={[styles.actionBtn, { backgroundColor: accent, borderColor: hexAlpha(accent, 0.5) }]}
+          >
+            <Text style={styles.actionBtnAddTxt}>Add</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <View style={styles.stage}>
-        <View
-          pointerEvents="box-none"
-          style={[
-            styles.stackClusterBox,
-            preview && picked
-              ? { width: clusterW, minHeight: previewClusterMinH }
-              : { width: clusterW, height: stackClusterH },
-          ]}
-        >
+        <View style={[styles.deckWrap, { width: clusterW }]}>
+          <View
+            pointerEvents="box-none"
+            style={[styles.stackClusterBox, { width: clusterW, height: stackClusterH }]}
+          >
           {preview && picked ? (
-            <View style={[styles.polaroid, { width: polaroidSizing.W, minHeight: polaroidSizing.H, alignSelf: 'center' }]}>
-              <Image source={{ uri: picked.uri }} style={styles.img} />
-              <Text style={styles.captionHint}>Caption</Text>
+            <View
+              style={[
+                styles.polaroid,
+                styles.previewPolaroid,
+                {
+                  width: polaroidSizing.W,
+                  height: polaroidSizing.H,
+                  left: stackCardLeft,
+                  top: stackCardTop,
+                },
+              ]}
+            >
+              <View style={styles.frame}>
+                <Image source={{ uri: picked.uri }} style={styles.img} />
+              </View>
               <TextInput
                 value={caption}
                 onChangeText={setCaption}
-                placeholder="Felt-pen caption…"
-                placeholderTextColor="#a1a1aa"
-                style={styles.captionInput}
+                placeholder="Caption…"
+                placeholderTextColor="rgba(30,30,34,0.35)"
+                style={styles.previewCaption}
                 maxLength={42}
               />
-              <View style={styles.row}>
+              <View style={styles.previewRow}>
                 <Pressable
-                  style={styles.pill}
+                  style={styles.previewPill}
                   onPress={() => {
                     setPreview(false);
                     setPicked(null);
                     setCaption('');
                   }}
                 >
-                  <Text style={styles.pillTxt}>Cancel</Text>
+                  <Text style={styles.previewPillTxt}>Cancel</Text>
                 </Pressable>
-                <Pressable style={[styles.pill, { backgroundColor: accent }]} onPress={commitUpload} disabled={busy}>
-                  <Text style={[styles.pillTxt, { color: '#0a0a0c' }]}>{busy ? 'Saving…' : 'Upload'}</Text>
+                <Pressable
+                  style={[styles.previewPill, { backgroundColor: accent }]}
+                  onPress={commitUpload}
+                  disabled={busy}
+                >
+                  <Text style={[styles.previewPillTxt, { color: '#0a0a0c' }]}>
+                    {busy ? '…' : 'Pin'}
+                  </Text>
                 </Pressable>
               </View>
             </View>
           ) : photos.length === 0 ? (
             <Pressable
-              style={[styles.polaroid, styles.empty, { width: polaroidSizing.W, height: polaroidSizing.H, alignSelf: 'center' }]}
+              style={[
+                styles.polaroid,
+                styles.empty,
+                styles.previewPolaroid,
+                {
+                  width: polaroidSizing.W,
+                  height: polaroidSizing.H,
+                  left: stackCardLeft,
+                  top: stackCardTop,
+                },
+              ]}
               onPress={pickImage}
             >
               <Text style={styles.bigPlus}>＋</Text>
               <Text style={styles.emptyTxt}>No memories yet</Text>
-              <Text style={styles.emptySub}>Tap polaroid or the + button to add</Text>
+              <Text style={styles.emptySub}>Tap Add to drop a memory</Text>
             </Pressable>
           ) : (
             photos.map((p, rawIndex) => {
@@ -290,19 +393,45 @@ export function MemoriesModule() {
                     <Text style={styles.capRead} numberOfLines={2}>
                       {p.caption || ' '}
                     </Text>
+                    {p.source_type === 'doodle' && p.created_at ? (
+                      <Text style={styles.doodleMeta} numberOfLines={1}>
+                        Saved by {saverLabel(p.uploaded_by)} ·{' '}
+                        {new Date(p.created_at).toLocaleDateString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               );
 
               /** Motion wrapper: outgoing top slips left on X; incoming (next index) lifts on Y toward stack slot */
               let wrapped: React.ReactElement = innerCard;
-              if (isIncoming && riseYI) {
+              if (isIncoming && riseYI && riseScaleI) {
                 wrapped = (
-                  <Animated.View style={[styles.motionFill, { transform: [{ translateY: riseYI }] }]}>{innerCard}</Animated.View>
+                  <Animated.View
+                    style={[styles.motionFill, { transform: [{ translateY: riseYI }, { scale: riseScaleI }] }]}
+                  >
+                    {innerCard}
+                  </Animated.View>
                 );
               }
               if (onTop) {
-                wrapped = <Animated.View style={[styles.motionFill, { transform: [{ translateX: slideXI }] }]}>{wrapped}</Animated.View>;
+                wrapped = (
+                  <Animated.View
+                    style={[
+                      styles.motionFill,
+                      {
+                        opacity: slideOpacityI,
+                        transform: [{ translateX: slideXI }, { rotate: slideRotI }],
+                      },
+                    ]}
+                  >
+                    {wrapped}
+                  </Animated.View>
+                );
               }
 
               return (
@@ -336,45 +465,109 @@ export function MemoriesModule() {
               );
             })
           )}
+          </View>
         </View>
       </View>
 
-      {!preview && (
-        <>
+      <Modal
+        visible={!!deleteTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!deleting) setDeleteTarget(null);
+        }}
+      >
+        <View style={styles.confirmRoot}>
+          <BlurView intensity={48} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={[styles.confirmTint, { backgroundColor: hexAlpha(palette.base, 0.55) }]} />
           <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Delete current photo"
-            disabled={photos.length === 0}
+            style={StyleSheet.absoluteFill}
             onPress={() => {
-              if (topPhoto) void wipe(topPhoto);
+              if (!deleting) setDeleteTarget(null);
             }}
-            style={[
-              styles.deleteFab,
-              { bottom: BOTTOM_BTN_INSET, opacity: photos.length === 0 ? 0.35 : 1 },
-            ]}
-          >
-            <Text style={styles.deleteFabGlyph}>✕</Text>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add photo"
-            onPress={pickImage}
-            style={[styles.addFab, { backgroundColor: accent, bottom: BOTTOM_BTN_INSET }]}
-          >
-            <Text style={styles.addFabGlyph}>＋</Text>
-          </Pressable>
-        </>
-      )}
+            accessibilityLabel="Dismiss"
+          />
+          <View style={[styles.confirmCard, { backgroundColor: sheetBg, borderColor: cardBorder }]}>
+            <View style={[styles.confirmIcon, { backgroundColor: hexAlpha('#f87171', 0.12) }]}>
+              <Ionicons name="warning-outline" size={22} color="#f87171" />
+            </View>
+            <Text style={[styles.confirmTitle, { color: text }]}>Remove memory?</Text>
+            <Text style={[styles.confirmSub, { color: textMuted }]}>
+              Deletes this polaroid from the wall for both of you. This cannot be undone.
+            </Text>
+            <View style={styles.confirmActions}>
+              <Pressable
+                style={[styles.confirmBtn, styles.confirmBtnGhost, { borderColor: cardBorder }]}
+                onPress={() => setDeleteTarget(null)}
+                disabled={deleting}
+              >
+                <Text style={[styles.confirmBtnTxt, { color: textMuted }]}>Keep</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.confirmBtn, { backgroundColor: '#dc2626' }]}
+                onPress={() => void commitDelete()}
+                disabled={deleting}
+              >
+                <Text style={[styles.confirmBtnTxt, { color: '#fff' }]}>
+                  {deleting ? 'Removing…' : 'Delete'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, paddingTop: 4 },
-  title: { fontSize: 15, fontWeight: '900', letterSpacing: 4, textTransform: 'uppercase', color: '#fafafa' },
-  sub: { marginTop: 6, fontSize: 11, color: '#71717a', marginBottom: 12 },
+  actionRailOuter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: ACTION_GAP,
+    width: '100%',
+    marginBottom: 12,
+    zIndex: 70,
+  },
+  actionBtn: {
+    paddingVertical: 13,
+    paddingHorizontal: 22,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  actionBtnDelete: {
+    backgroundColor: 'rgba(26,22,26,0.92)',
+    borderColor: 'rgba(248,113,113,0.4)',
+  },
+  actionBtnDeleteTxt: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    color: '#fca5a5',
+  },
+  actionBtnAddTxt: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    color: '#0a0a0c',
+  },
+  actionBtnDisabled: { opacity: 0.35 },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center', width: '100%', minHeight: 0 },
+  deckWrap: {
+    alignSelf: 'center',
+    alignItems: 'stretch',
+  },
   stackClusterBox: {
     justifyContent: 'center',
     alignItems: 'center',
@@ -391,12 +584,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#fcfbf9',
     borderRadius: 4,
     flexDirection: 'column',
-    flex: 1,
     width: '100%',
     height: '100%',
     paddingHorizontal: 13,
     paddingTop: 12,
-    paddingBottom: 18,
+    paddingBottom: 14,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(20,20,24,0.15)',
     shadowColor: '#000',
@@ -404,6 +596,10 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 10,
+  },
+  previewPolaroid: {
+    position: 'absolute',
+    zIndex: 20,
   },
   empty: { alignItems: 'center', justifyContent: 'center', gap: 6 },
   cardPressInner: { flex: 1, width: '100%', justifyContent: 'flex-start' },
@@ -439,71 +635,84 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     includeFontPadding: false,
   },
-  captionHint: { marginTop: 8, fontSize: 11, fontWeight: '800', color: '#52525b', letterSpacing: 2, textTransform: 'uppercase' },
-  captionInput: {
-    marginTop: 6,
-    fontSize: 15,
-    color: '#27272a',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d4d4d8',
-    paddingVertical: 4,
+  doodleMeta: {
+    marginTop: 4,
+    width: '100%',
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(30,30,34,0.55)',
+    letterSpacing: 0.3,
   },
-  row: { flexDirection: 'row', gap: 10, marginTop: 14, justifyContent: 'space-between' },
-  pill: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: 'rgba(10,10,12,0.06)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(10,10,12,0.12)',
-    alignItems: 'center',
-  },
-  pillTxt: { fontSize: 11, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase', color: '#27272a' },
-
-  deleteFab: {
-    position: 'absolute',
-    left: 18,
-    width: FAB_SIZE,
-    height: FAB_SIZE,
-    borderRadius: FAB_SIZE / 2,
-    backgroundColor: 'rgba(26,22,26,0.92)',
-    borderWidth: StyleSheet.hairlineWidth + 1,
-    borderColor: 'rgba(248,113,113,0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 60,
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 12,
-  },
-  deleteFabGlyph: {
-    fontSize: 22,
-    fontWeight: '300',
-    color: '#fca5a5',
-    marginTop: -2,
-  },
-  addFab: {
-    position: 'absolute',
-    right: 18,
-    width: FAB_SIZE,
-    height: FAB_SIZE,
-    borderRadius: FAB_SIZE / 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 60,
-    shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 14,
-  },
-  addFabGlyph: {
-    fontSize: 28,
-    fontWeight: '500',
-    color: '#0a0a0c',
-    marginTop: -3,
+  previewCaption: {
+    marginTop: 8,
+    width: '100%',
+    textAlign: 'center',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '700',
+    color: 'rgba(30,30,34,0.88)',
+    paddingVertical: 2,
     includeFontPadding: false,
   },
+  previewRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 'auto' as const,
+    paddingTop: 8,
+  },
+  previewPill: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: 'rgba(10,10,12,0.06)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(10,10,12,0.1)',
+    alignItems: 'center',
+  },
+  previewPillTxt: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    color: '#27272a',
+  },
+  confirmRoot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  confirmTint: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  confirmCard: {
+    width: '100%',
+    maxWidth: 320,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 18,
+    gap: 8,
+    zIndex: 2,
+  },
+  confirmIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmTitle: { fontSize: 16, fontWeight: '900' },
+  confirmSub: { fontSize: 11, lineHeight: 16 },
+  confirmActions: { flexDirection: 'row', gap: 8, marginTop: 6 },
+  confirmBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  confirmBtnGhost: { backgroundColor: 'rgba(255,255,255,0.04)' },
+  confirmBtnTxt: { fontSize: 12, fontWeight: '800' },
 });

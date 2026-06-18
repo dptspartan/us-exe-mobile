@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
-  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -21,6 +20,9 @@ const INNER = 36;
 const LABEL_H = 10;
 const FAB_GAP_BOTTOM = 6;
 const NAV_SURFACE = 'rgba(8, 8, 12, 0.96)';
+const OPEN_MS = 340;
+const CLOSE_MS = 260;
+const STAGGER_MS = 34;
 
 export function sessionDockOccupiedHeight(_insetsBottom?: number): number {
   return 0;
@@ -41,16 +43,17 @@ type Props = {
 export function RadialSessionNav({ active, onSelect, accent }: Props) {
   const insets = useSafeAreaInsets();
   const { width: W, height: H } = useWindowDimensions();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [overlayMounted, setOverlayMounted] = useState(false);
+  const closingRef = useRef(false);
 
   const bottomPad = Math.max(insets.bottom, FAB_GAP_BOTTOM);
   const hubCenterX = W / 2;
   const hubCenterY = H - bottomPad - FAB / 2;
-  const hubLeftFab = hubCenterX - FAB / 2;
 
   const backdropOp = useRef(new Animated.Value(0)).current;
   const arcProgress = useRef(SESSION_TILES.map(() => new Animated.Value(0))).current;
   const floatPhase = useRef(new Animated.Value(0)).current;
+  const floatLoopRef = useRef<Animated.CompositeAnimation | null>(null);
 
   const nodeW = RING + 6;
   const arcLayout = useMemo(
@@ -58,12 +61,15 @@ export function RadialSessionNav({ active, onSelect, accent }: Props) {
     [W, hubCenterX, hubCenterY, nodeW, insets.top],
   );
 
-  useEffect(() => {
-    if (!menuOpen) {
-      floatPhase.stopAnimation();
-      floatPhase.setValue(0);
-      return;
-    }
+  const stopFloat = useCallback(() => {
+    floatLoopRef.current?.stop();
+    floatLoopRef.current = null;
+    floatPhase.stopAnimation();
+    floatPhase.setValue(0);
+  }, [floatPhase]);
+
+  const startFloat = useCallback(() => {
+    stopFloat();
     const bob = Animated.loop(
       Animated.sequence([
         Animated.timing(floatPhase, {
@@ -80,35 +86,88 @@ export function RadialSessionNav({ active, onSelect, accent }: Props) {
         }),
       ]),
     );
+    floatLoopRef.current = bob;
     bob.start();
-    return () => bob.stop();
-  }, [floatPhase, menuOpen]);
+  }, [floatPhase, stopFloat]);
 
-  useEffect(() => {
-    const open = menuOpen;
-    Animated.timing(backdropOp, {
-      toValue: open ? 1 : 0,
-      duration: open ? 180 : 120,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    }).start();
+  const animateOpen = useCallback(() => {
+    if (overlayMounted || closingRef.current) return;
+    closingRef.current = false;
+    backdropOp.setValue(0);
+    arcProgress.forEach((p) => p.setValue(0));
+    setOverlayMounted(true);
 
-    SESSION_TILES.forEach((_, i) => {
-      Animated.timing(arcProgress[i], {
-        toValue: open ? 1 : 0,
-        duration: open ? 200 : 140,
-        delay: open ? i * 28 : 0,
+    requestAnimationFrame(() => {
+      Animated.timing(backdropOp, {
+        toValue: 1,
+        duration: OPEN_MS,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start();
+
+      Animated.stagger(
+        STAGGER_MS,
+        arcProgress.map((p) =>
+          Animated.timing(p, {
+            toValue: 1,
+            duration: OPEN_MS,
+            easing: Easing.out(Easing.back(1.06)),
+            useNativeDriver: true,
+          }),
+        ),
+      ).start(({ finished }) => {
+        if (finished) startFloat();
+      });
     });
-  }, [menuOpen, backdropOp, arcProgress]);
+  }, [arcProgress, backdropOp, overlayMounted, startFloat]);
+
+  const animateClose = useCallback(
+    (after?: () => void) => {
+      if (!overlayMounted || closingRef.current) {
+        after?.();
+        return;
+      }
+      closingRef.current = true;
+      stopFloat();
+
+      const reversed = [...arcProgress].reverse();
+      Animated.parallel([
+        Animated.timing(backdropOp, {
+          toValue: 0,
+          duration: CLOSE_MS,
+          easing: Easing.in(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        ...reversed.map((p, i) =>
+          Animated.timing(p, {
+            toValue: 0,
+            duration: CLOSE_MS,
+            delay: i * 20,
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ),
+      ]).start(({ finished }) => {
+        closingRef.current = false;
+        if (finished) {
+          setOverlayMounted(false);
+          after?.();
+        }
+      });
+    },
+    [arcProgress, backdropOp, overlayMounted, stopFloat],
+  );
 
   const activeTile = SESSION_TILES.find((t) => t.id === active) ?? SESSION_TILES[0];
 
   function pick(id: SessionId) {
     onSelect(id);
-    setMenuOpen(false);
+    animateClose();
+  }
+
+  function toggleMenu() {
+    if (overlayMounted) animateClose();
+    else animateOpen();
   }
 
   const collapsedLeft = hubCenterX - nodeW / 2;
@@ -121,20 +180,15 @@ export function RadialSessionNav({ active, onSelect, accent }: Props) {
   });
 
   return (
-    <View pointerEvents="box-none" style={[styles.hubDock, { paddingBottom: bottomPad }]}>
-      {!menuOpen && (
-        <FabButton
-          icon={activeTile.icon}
-          accent={accent}
-          onPress={() => setMenuOpen(true)}
-          accessibilityLabel="Open sessions"
-        />
-      )}
-
-      <Modal visible={menuOpen} transparent animationType="none" statusBarTranslucent onRequestClose={() => setMenuOpen(false)}>
-        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-          <Animated.View style={[styles.backdrop, { opacity: backdropOp }]} />
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuOpen(false)} accessibilityLabel="Close menu" />
+    <>
+      {overlayMounted ? (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Animated.View style={[styles.backdrop, { opacity: backdropOp }]} pointerEvents="none" />
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => animateClose()}
+            accessibilityLabel="Close menu"
+          />
 
           {SESSION_TILES.map((tile, i) => {
             const slot = arcLayout.slots[i];
@@ -146,7 +200,8 @@ export function RadialSessionNav({ active, onSelect, accent }: Props) {
 
             const tx = prog.interpolate({ inputRange: [0, 1], outputRange: [0, dx] });
             const ty = prog.interpolate({ inputRange: [0, 1], outputRange: [0, dy] });
-            const op = prog.interpolate({ inputRange: [0, 0.4, 1], outputRange: [0, 1, 1] });
+            const scale = prog.interpolate({ inputRange: [0, 1], outputRange: [0.28, 1] });
+            const op = prog.interpolate({ inputRange: [0, 0.12, 1], outputRange: [0, 1, 1] });
 
             const bob = selected
               ? floatY
@@ -166,7 +221,11 @@ export function RadialSessionNav({ active, onSelect, accent }: Props) {
                     width: nodeW,
                     height: nodeStackH,
                     opacity: op,
-                    transform: [{ translateX: tx }, { translateY: Animated.add(ty, bob) }],
+                    transform: [
+                      { translateX: tx },
+                      { translateY: Animated.add(ty, bob) },
+                      { scale },
+                    ],
                   },
                 ]}
                 pointerEvents="box-none"
@@ -209,13 +268,19 @@ export function RadialSessionNav({ active, onSelect, accent }: Props) {
               </Animated.View>
             );
           })}
-
-          <View style={[styles.modalFabOuter, { left: hubLeftFab, bottom: bottomPad }]}>
-            <FabButton open accent={accent} onPress={() => setMenuOpen(false)} accessibilityLabel="Close sessions" />
-          </View>
         </View>
-      </Modal>
-    </View>
+      ) : null}
+
+      <View pointerEvents="box-none" style={[styles.hubDock, { paddingBottom: bottomPad }]}>
+        <FabButton
+          open={overlayMounted}
+          icon={activeTile.icon}
+          accent={accent}
+          onPress={toggleMenu}
+          accessibilityLabel={overlayMounted ? 'Close sessions' : 'Open sessions'}
+        />
+      </View>
+    </>
   );
 }
 
@@ -285,20 +350,18 @@ function FabButton({
 }
 
 const styles = StyleSheet.create({
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 45,
+  },
   hubDock: {
     position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    zIndex: 50,
+    zIndex: 55,
     alignItems: 'center',
     justifyContent: 'flex-end',
-  },
-  modalFabOuter: {
-    position: 'absolute',
-    zIndex: 100,
-    width: FAB,
-    height: FAB,
   },
   fabPlate: {
     width: FAB,
@@ -313,7 +376,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: -2 },
     elevation: 12,
   },
-
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(4, 4, 8, 0.82)',

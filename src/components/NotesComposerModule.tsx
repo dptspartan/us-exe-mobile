@@ -42,10 +42,6 @@ export function NotesComposerModule() {
           />
         ))}
         <View style={[styles.card, { borderColor: hexAlpha(accent, 0.22), backgroundColor: card, zIndex: 10 }]}>
-          <View style={[styles.head, { borderBottomColor: cardBorder }]}>
-            <Text style={[styles.tag, { color: textMuted }]}>Write sticky</Text>
-            <View style={[styles.pip, { backgroundColor: hexAlpha(accent, 0.55) }]} />
-          </View>
           <TextInput
             value={msg}
             onChangeText={setMsg}
@@ -93,18 +89,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     minHeight: 260,
   },
-  head: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
-    paddingBottom: 10,
-    marginBottom: 10,
-  },
-  tag: { fontSize: 10, fontWeight: '900', letterSpacing: 3, textTransform: 'uppercase', color: '#a1a1aa' },
-  pip: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#3f3f46' },
-  area: { flex: 1, color: '#f4f4f5', fontSize: 14, lineHeight: 21, minHeight: 120, fontWeight: '600' },
+  area: { flex: 1, color: '#f4f4f5', fontSize: 14, lineHeight: 21, minHeight: 140, fontWeight: '600' },
   foot: {
     marginTop: 12,
     flexDirection: 'row',
