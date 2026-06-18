@@ -60,18 +60,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Create .env for EAS build
+      - name: Prepare Supabase env for EAS build
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
+          if [[ -z "$EXPO_PUBLIC_SUPABASE_URL" || -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]]; then
+            echo "::error::GitHub secrets EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY must be set (Settings → Secrets → Actions)."
+            exit 1
+          fi
           printf 'EXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_ANON_KEY=%s\n' \
             "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_ANON_KEY" > .env
+          node scripts/check-eas-env.cjs
+          npx eas-cli env:push preview --path .env --force
 
       - name: Build preview APK on EAS
         id: eas
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
           set -euo pipefail
           MESSAGE="Release ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref_name }} (${{ steps.version.outputs.value }})"

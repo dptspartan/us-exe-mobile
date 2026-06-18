@@ -41,10 +41,10 @@
     "web": "expo start --web",
     "eas:dev:android": "eas build --profile development --platform android",
     "eas:dev:ios": "eas build --profile development --platform ios",
-    "eas:preview:android": "eas build --profile preview --platform android",
-    "eas:preview:android:clean": "eas build --profile preview --platform android --clear-cache",
-    "android:uninstall": "adb uninstall com.anonymous.usexemobile || adb shell pm uninstall --user 0 com.anonymous.usexemobile",
-    "eas:prod:android": "eas build --profile production --platform android"
+    "eas:preview:android": "node scripts/eas-build.cjs preview --platform android",
+    "eas:preview:android:clean": "node scripts/eas-build.cjs preview --platform android --clear-cache",
+    "eas:prod:android": "node scripts/eas-build.cjs production --platform android",
+    "android:uninstall": "adb uninstall com.anonymous.usexemobile || adb shell pm uninstall --user 0 com.anonymous.usexemobile"
   },
   "private": true
 }
