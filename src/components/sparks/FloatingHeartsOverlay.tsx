@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Easing,
-  Modal,
   StyleSheet,
   Text,
   View,
@@ -109,20 +108,18 @@ export function FloatingHeartsOverlay() {
   if (!heartsVisible) return null;
 
   return (
-    <Modal visible transparent animationType="none" statusBarTranslucent presentationStyle="overFullScreen">
-      <View style={styles.fill} pointerEvents="none">
-        {specs.map((spec, i) => (
-          <FloatingHeart key={`${heartsBurstId}-${i}`} spec={spec} height={height} />
-        ))}
-      </View>
-    </Modal>
+    <View style={styles.overlay} pointerEvents="none">
+      {specs.map((spec, i) => (
+        <FloatingHeart key={`${heartsBurstId}-${i}`} spec={spec} height={height} />
+      ))}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  fill: {
-    flex: 1,
-    backgroundColor: 'transparent',
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 45,
   },
   heart: {
     position: 'absolute',

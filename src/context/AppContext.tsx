@@ -107,17 +107,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [user?.id, coupleProfile]);
 
+  const coupleId = (coupleProfile?.id as string) ?? null;
+
+  useEffect(() => {
+    if (!coupleId || !user?.id) return;
+    void networkUtility.prefetchCoupleData(coupleId, user.id);
+  }, [coupleId, user?.id]);
+
   const value = useMemo(
     (): AppCtx => ({
       user,
-      coupleId: (coupleProfile?.id as string) ?? null,
+      coupleId,
       coupleProfile,
       partnerId,
       loading: !hydrated || initializing,
       isAuthenticated: !!user,
       isPaired: !!coupleProfile,
     }),
-    [user, coupleProfile, partnerId, hydrated, initializing]
+    [user, coupleProfile, partnerId, hydrated, initializing, coupleId]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

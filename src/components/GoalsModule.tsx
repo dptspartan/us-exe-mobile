@@ -1,18 +1,24 @@
 import { useCallback, useState } from 'react';
 import {
   FlatList,
+  Image,
   Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { BlurView } from 'expo-blur';
+import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { networkUtility } from '../api/network';
 import { useCoupleRealtime } from '../hooks/useCoupleRealtime';
 import { useApp } from '../context/AppContext';
 import { useVibeTheme } from '../hooks/useVibeTheme';
+import { hexAlpha } from '../utils/theme';
 
 type Todo = { id: string; task: string; is_completed: boolean };
 
@@ -23,10 +29,15 @@ type DiaryRow = Record<string, unknown> & {
   location?: string | null;
   is_completed: boolean;
   notes?: { id: string; user_id: string; notes?: string; rating?: number | null }[];
-  photos?: { id: string; photo_wall?: { id: string; storage_path: string; imageUrl?: string } }[];
+  photos?: {
+    id: string;
+    photo_wall?: { id: string; storage_path: string; imageUrl?: string; caption?: string };
+  }[];
 };
 
 const FILTERS = ['all', 'pending', 'completed'] as const;
+type DeskTab = 'goals' | 'dates';
+type SheetTab = 'notes' | 'memories';
 
 function formatDisplayDate(iso: string) {
   return new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, {
@@ -45,12 +56,27 @@ function isUpcoming(d: DiaryRow) {
   return scheduled >= today;
 }
 
-function StarRow({ value, onChange, disabled }: { value: number; onChange: (n: number) => void; disabled?: boolean }) {
+function filterLabel(f: (typeof FILTERS)[number], deskTab: DeskTab) {
+  if (deskTab === 'dates' && f === 'pending') return 'Upcoming';
+  return f;
+}
+
+function StarRow({
+  value,
+  onChange,
+  disabled,
+  accent,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  disabled?: boolean;
+  accent: string;
+}) {
   return (
-    <View style={{ flexDirection: 'row', gap: 2 }}>
+    <View style={styles.starRow}>
       {[1, 2, 3, 4, 5].map((s) => (
-        <Pressable key={s} disabled={disabled} onPress={() => onChange(s)}>
-          <Text style={{ fontSize: 18, color: s <= value ? '#f472b6' : '#3f3f46' }}>★</Text>
+        <Pressable key={s} disabled={disabled} onPress={() => onChange(s)} hitSlop={4}>
+          <Text style={{ fontSize: 20, color: s <= value ? accent : hexAlpha('#71717a', 0.55) }}>★</Text>
         </Pressable>
       ))}
     </View>
@@ -58,9 +84,9 @@ function StarRow({ value, onChange, disabled }: { value: number; onChange: (n: n
 }
 
 export function GoalsModule() {
-  const { accent, text, textMuted, inputBg, cardBorder } = useVibeTheme();
+  const { accent, text, textMuted, textFaint, card, cardBorder, inputBg, palette } = useVibeTheme();
   const { user, coupleId } = useApp();
-  const [deskTab, setDeskTab] = useState<'goals' | 'dates'>('goals');
+  const [deskTab, setDeskTab] = useState<DeskTab>('goals');
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('pending');
 
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -95,6 +121,7 @@ export function GoalsModule() {
   const [noteText, setNoteText] = useState('');
   const [noteRating, setNoteRating] = useState(0);
   const [photoBusy, setPhotoBusy] = useState(false);
+  const [sheetTab, setSheetTab] = useState<SheetTab>('notes');
 
   const filteredTodos = todos.filter((t) => {
     if (filter === 'pending') return !t.is_completed;
@@ -107,6 +134,8 @@ export function GoalsModule() {
     if (filter === 'pending') return isUpcoming(d);
     return true;
   });
+
+  const listContentStyle = { flexGrow: 1 as const, paddingBottom: 14 };
 
   async function addTodo() {
     const trimmed = task.trim();
@@ -169,6 +198,7 @@ export function GoalsModule() {
     setSel(d);
     setNoteText('');
     setNoteRating(0);
+    setSheetTab('notes');
   }
 
   async function toggleDone(d: DiaryRow) {
@@ -226,152 +256,400 @@ export function GoalsModule() {
     }
   }
 
-  /** Small inner pad only — dashboard stage already reserves bottom safe + FAB space */
-  const listContentStyle = { flexGrow: 1 as const, paddingBottom: 14 };
+  const fieldBorder = hexAlpha(cardBorder, 0.65);
 
   return (
-    <View style={styles.shell}>
-      <View style={styles.toolbar}>
-        <Pressable style={[styles.tab, deskTab === 'goals' && { borderColor: accent }]} onPress={() => setDeskTab('goals')}>
-          <Text style={[styles.tabTxt, deskTab === 'goals' && { color: accent }]}>Goals</Text>
-        </Pressable>
-        <Pressable style={[styles.tab, deskTab === 'dates' && { borderColor: accent }]} onPress={() => setDeskTab('dates')}>
-          <Text style={[styles.tabTxt, deskTab === 'dates' && { color: accent }]}>Dates</Text>
-        </Pressable>
+    <View style={styles.wrap}>
+      <View style={styles.content}>
+      <View style={[styles.seg, { backgroundColor: card, borderColor: cardBorder }]}>
+        {(['goals', 'dates'] as const).map((tab) => {
+          const active = deskTab === tab;
+          return (
+            <Pressable
+              key={tab}
+              onPress={() => setDeskTab(tab)}
+              style={[
+                styles.segBtn,
+                active && { backgroundColor: hexAlpha(accent, 0.2), borderColor: hexAlpha(accent, 0.45) },
+              ]}
+            >
+              <Ionicons
+                name={tab === 'goals' ? 'checkbox-outline' : 'calendar-outline'}
+                size={14}
+                color={active ? accent : textMuted}
+                style={styles.segIcon}
+              />
+              <Text style={[styles.segTxt, { color: active ? accent : textMuted }]}>
+                {tab === 'goals' ? 'Goals' : 'Dates'}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       <View style={styles.filters}>
-        {FILTERS.map((f) => (
-          <Pressable key={f} onPress={() => setFilter(f)} style={[styles.chip, filter === f && { backgroundColor: accent + '44' }]}>
-            <Text style={[styles.chipTxt, filter === f && { color: text }]}>
-              {deskTab === 'dates' && f === 'pending' ? 'Upcoming' : f}
-            </Text>
-          </Pressable>
-        ))}
+        {FILTERS.map((f) => {
+          const active = filter === f;
+          return (
+            <Pressable
+              key={f}
+              onPress={() => setFilter(f)}
+              style={[
+                styles.chip,
+                { borderColor: active ? hexAlpha(accent, 0.4) : 'transparent' },
+                active && { backgroundColor: hexAlpha(accent, 0.14) },
+              ]}
+            >
+              <Text style={[styles.chipTxt, { color: active ? accent : textMuted }]}>
+                {filterLabel(f, deskTab)}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
-      <View style={styles.body}>
-        {deskTab === 'goals' ? (
-          <>
-            <View style={styles.addRow}>
+      {deskTab === 'goals' ? (
+        <>
+          <View style={[styles.composeRow, { borderBottomColor: fieldBorder }]}>
+            <TextInput
+              value={task}
+              onChangeText={setTask}
+              placeholder="New couple goal…"
+              placeholderTextColor={textFaint}
+              style={[styles.composeIn, { color: text }]}
+              onSubmitEditing={() => void addTodo()}
+              returnKeyType="done"
+            />
+            <Pressable
+              style={[styles.cta, { backgroundColor: accent }, (!task.trim() || todoBusy) && { opacity: 0.45 }]}
+              onPress={addTodo}
+              disabled={!task.trim() || todoBusy}
+            >
+              <Text style={styles.ctaTxt}>{todoBusy ? '…' : 'Add'}</Text>
+            </Pressable>
+          </View>
+
+          <FlatList
+            data={filteredTodos}
+            keyExtractor={(it) => it.id}
+            style={styles.list}
+            contentContainerStyle={listContentStyle}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              <Text style={[styles.empty, { color: textMuted }]}>Queue empty · nice work</Text>
+            }
+            renderItem={({ item }) => (
+              <View style={[styles.goalRow, { borderBottomColor: hexAlpha(cardBorder, 0.45) }]}>
+                <Pressable onPress={() => toggleTodo(item)} style={styles.checkbox} hitSlop={6}>
+                  <View
+                    style={[
+                      styles.checkRing,
+                      { borderColor: item.is_completed ? accent : textMuted },
+                      item.is_completed && { backgroundColor: hexAlpha(accent, 0.25) },
+                    ]}
+                  >
+                    {item.is_completed ? (
+                      <Ionicons name="checkmark" size={12} color={accent} />
+                    ) : null}
+                  </View>
+                </Pressable>
+                <Text
+                  style={[
+                    styles.goalTxt,
+                    { color: text },
+                    item.is_completed && { color: textMuted, textDecorationLine: 'line-through' },
+                  ]}
+                >
+                  {item.task}
+                </Text>
+                {!item.is_completed ? (
+                  <Pressable onPress={() => deleteTodo(item.id)} hitSlop={8} accessibilityLabel="Delete goal">
+                    <Ionicons name="close" size={17} color="#fca5a5" />
+                  </Pressable>
+                ) : (
+                  <View style={styles.deleteSpacer} />
+                )}
+              </View>
+            )}
+          />
+        </>
+      ) : (
+        <>
+          <View style={styles.dateForm}>
+            <Text style={[styles.fieldLab, { color: textMuted }]}>Plan a date</Text>
+            <TextInput
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Date title"
+              placeholderTextColor={textFaint}
+              style={[styles.fieldIn, { color: text, borderBottomColor: fieldBorder }]}
+            />
+            <View style={styles.dateRowInputs}>
               <TextInput
-                value={task}
-                onChangeText={setTask}
-                placeholder="New couple goal…"
-                placeholderTextColor="#71717a"
-                style={styles.addIn}
+                value={scheduled}
+                onChangeText={setScheduled}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={textFaint}
+                style={[styles.fieldIn, styles.dateField, { color: text, borderBottomColor: fieldBorder }]}
               />
-              <Pressable style={[styles.addBtn, { backgroundColor: accent }]} onPress={addTodo} disabled={!task.trim() || todoBusy}>
-                <Text style={styles.addBtnTxt}>Add</Text>
+              <Pressable
+                style={[
+                  styles.cta,
+                  { backgroundColor: accent },
+                  (!title.trim() || !scheduled || dateBusy) && { opacity: 0.45 },
+                ]}
+                onPress={planDate}
+                disabled={!title.trim() || !scheduled || dateBusy}
+              >
+                <Text style={styles.ctaTxt}>{dateBusy ? '…' : 'Plan'}</Text>
               </Pressable>
             </View>
-            <FlatList
-              data={filteredTodos}
-              keyExtractor={(it) => it.id}
-              style={{ flex: 1 }}
-              contentContainerStyle={listContentStyle}
-              ListEmptyComponent={<Text style={styles.empty}>Queue empty · nice work</Text>}
-              renderItem={({ item }) => (
-                <View style={styles.goalRow}>
-                  <Pressable onPress={() => toggleTodo(item)} style={styles.checkbox}>
-                    <View style={[styles.dot, item.is_completed && { backgroundColor: accent, borderColor: accent }]} />
-                  </Pressable>
-                  <Text style={[styles.goalTxt, item.is_completed && styles.goalDone]}>{item.task}</Text>
-                  <Pressable onPress={() => deleteTodo(item.id)}>
-                    <Text style={styles.kill}>✕</Text>
-                  </Pressable>
-                </View>
-              )}
+            <TextInput
+              value={loc}
+              onChangeText={setLoc}
+              placeholder="Location (optional)"
+              placeholderTextColor={textFaint}
+              style={[styles.fieldIn, { color: text, borderBottomColor: fieldBorder }]}
             />
-          </>
-        ) : (
-          <>
-            <View style={styles.formBox}>
-              <TextInput value={title} onChangeText={setTitle} placeholder="Date title" placeholderTextColor="#71717a" style={styles.field} />
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <TextInput value={scheduled} onChangeText={setScheduled} placeholder="YYYY-MM-DD" placeholderTextColor="#71717a" style={[styles.field, { flex: 1 }]} />
-                <Pressable style={[styles.addBtn, { backgroundColor: accent }]} onPress={planDate} disabled={!title.trim() || !scheduled || dateBusy}>
-                  <Text style={styles.addBtnTxt}>Plan</Text>
-                </Pressable>
-              </View>
-              <TextInput value={loc} onChangeText={setLoc} placeholder="Location (optional)" placeholderTextColor="#71717a" style={styles.field} />
-            </View>
-            <FlatList
-              data={filteredDates}
-              keyExtractor={(it) => it.id}
-              style={{ flex: 1 }}
-              contentContainerStyle={listContentStyle}
-              ListEmptyComponent={<Text style={styles.empty}>No dates · plan magic</Text>}
-              renderItem={({ item }) => (
-                <Pressable style={styles.dateRow} onPress={() => openDetail(item)}>
-                  <View style={[styles.bullet, item.is_completed ? { backgroundColor: '#22c55e' } : isUpcoming(item) ? { backgroundColor: accent } : { backgroundColor: '#52525b' }]} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.dateTitle}>{item.title}</Text>
-                    <Text style={styles.dateSub}>{formatDisplayDate(item.scheduled_date)}</Text>
+          </View>
+
+          <FlatList
+            data={filteredDates}
+            keyExtractor={(it) => it.id}
+            style={styles.list}
+            contentContainerStyle={listContentStyle}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              <Text style={[styles.empty, { color: textMuted }]}>No dates · plan something sweet</Text>
+            }
+            renderItem={({ item }) => {
+              const statusColor = item.is_completed ? '#22c55e' : isUpcoming(item) ? accent : textMuted;
+              return (
+                <Pressable
+                  style={[styles.dateRow, { borderBottomColor: hexAlpha(cardBorder, 0.45) }]}
+                  onPress={() => openDetail(item)}
+                >
+                  <View style={[styles.datePip, { backgroundColor: hexAlpha(statusColor, 0.85) }]} />
+                  <View style={styles.dateMeta}>
+                    <Text style={[styles.dateTitle, { color: text }]}>{item.title}</Text>
+                    <Text style={[styles.dateSub, { color: textMuted }]}>
+                      {formatDisplayDate(item.scheduled_date)}
+                      {item.location ? ` · ${item.location}` : ''}
+                    </Text>
                   </View>
-                  <Text style={styles.chev}>→</Text>
+                  <Ionicons name="chevron-forward" size={16} color={textFaint} />
                 </Pressable>
-              )}
-            />
-          </>
-        )}
+              );
+            }}
+          />
+        </>
+      )}
       </View>
 
       <Modal visible={!!sel} animationType="slide" transparent onRequestClose={() => setSel(null)}>
-        <View style={styles.modalWrap}>
-          <View style={styles.modalCard}>
-            {sel ? (
-              <>
-                <Pressable onPress={() => setSel(null)}>
-                  <Text style={styles.back}>← Back</Text>
-                </Pressable>
-                <Text style={styles.mTitle}>{sel.title}</Text>
-                <Text style={styles.mSub}>{formatDisplayDate(sel.scheduled_date)}</Text>
-                {sel.location ? <Text style={styles.mLoc}>📍 {sel.location}</Text> : null}
-                <Pressable style={styles.doneBtn} onPress={() => toggleDone(sel)}>
-                  <Text style={styles.doneTxt}>{sel.is_completed ? 'Reopen' : 'Mark finished'}</Text>
-                </Pressable>
+        <View style={styles.modalRoot}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setSel(null)}>
+            <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: hexAlpha(palette.base, 0.45) }]} />
+          </Pressable>
 
-                <Text style={styles.section}>Reflections</Text>
-                {(sel.notes || []).map((n) => (
-                  <View key={n.id} style={[styles.noteCard, n.user_id === user?.id ? { borderColor: accent + '55' } : {}]}>
-                    <Text style={styles.noteWho}>{n.user_id === user?.id ? 'You' : 'Partner'}</Text>
-                    <Text style={styles.noteBody}>{n.notes || ''}</Text>
-                    {n.rating ? <Text style={{ color: accent }}>{'★'.repeat(n.rating)}</Text> : null}
-                  </View>
-                ))}
+          <View style={styles.sheetAnchor} pointerEvents="box-none">
+            <View
+              style={[
+                styles.sheet,
+                { borderColor: hexAlpha(accent, 0.22), backgroundColor: hexAlpha(palette.deepMine, 0.88) },
+              ]}
+            >
+              <BlurView intensity={36} tint="dark" style={StyleSheet.absoluteFill} />
+              <View
+                style={[StyleSheet.absoluteFill, { backgroundColor: hexAlpha(palette.deepMine, 0.55) }]}
+              />
 
-                <Text style={styles.section}>Add note</Text>
-                <TextInput
-                  value={noteText}
-                  onChangeText={setNoteText}
-                  multiline
-                  placeholder="How was it?"
-                  placeholderTextColor="#71717a"
-                  style={styles.noteIn}
-                />
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
-                  <StarRow value={noteRating} onChange={setNoteRating} disabled={dateBusy} />
-                  <Pressable style={[styles.addBtn, { backgroundColor: accent }]} onPress={addDiaryNote} disabled={!noteText.trim() || dateBusy}>
-                    <Text style={styles.addBtnTxt}>Save</Text>
-                  </Pressable>
-                </View>
+              {sel ? (
+                <ScrollView
+                  style={styles.sheetScroll}
+                  contentContainerStyle={styles.sheetPad}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View style={[styles.sheetHandle, { backgroundColor: hexAlpha(cardBorder, 0.8) }]} />
 
-                {sel.is_completed ? (
-                  <>
-                    <Text style={[styles.section, { marginTop: 16 }]}>Date photos</Text>
-                    <Pressable style={styles.photoBtn} onPress={pickDiaryPhoto} disabled={photoBusy}>
-                      <Text style={styles.photoBtnTxt}>{photoBusy ? 'Uploading…' : '＋ Link polaroid'}</Text>
-                    </Pressable>
-                    {(sel.photos || []).map((ph) => (
-                      <Text key={ph.id} style={styles.photoLine}>
-                        · {ph.photo_wall?.imageUrl ? 'Memory linked' : 'Photo'}
+                  <View style={styles.sheetHeader}>
+                    <View style={styles.sheetHeaderMeta}>
+                      <Text style={[styles.mTitle, { color: text }]} numberOfLines={2}>
+                        {sel.title}
                       </Text>
-                    ))}
-                  </>
-                ) : null}
-              </>
-            ) : null}
+                      <Text style={[styles.mSub, { color: textMuted }]}>
+                        {formatDisplayDate(sel.scheduled_date)}
+                      </Text>
+                      {sel.location ? (
+                        <View style={styles.locRow}>
+                          <Ionicons name="location-outline" size={13} color={accent} />
+                          <Text style={[styles.mLoc, { color: hexAlpha(accent, 0.9) }]} numberOfLines={1}>
+                            {sel.location}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Pressable onPress={() => setSel(null)} hitSlop={12} style={styles.sheetClose}>
+                      <Ionicons name="close" size={22} color={textMuted} />
+                    </Pressable>
+                  </View>
+
+                  <Pressable
+                    style={[styles.doneBtn, { borderColor: hexAlpha(cardBorder, 0.7) }]}
+                    onPress={() => toggleDone(sel)}
+                  >
+                    <Text style={[styles.doneTxt, { color: text }]}>
+                      {sel.is_completed ? 'Reopen date' : 'Mark finished'}
+                    </Text>
+                  </Pressable>
+
+                  {sel.is_completed ? (
+                    <>
+                      <View style={[styles.sheetSeg, { backgroundColor: card, borderColor: cardBorder }]}>
+                        {(['notes', 'memories'] as const).map((tab) => {
+                          const active = sheetTab === tab;
+                          return (
+                            <Pressable
+                              key={tab}
+                              onPress={() => setSheetTab(tab)}
+                              style={[
+                                styles.sheetSegBtn,
+                                active && {
+                                  backgroundColor: hexAlpha(accent, 0.2),
+                                  borderColor: hexAlpha(accent, 0.45),
+                                },
+                              ]}
+                            >
+                              <Ionicons
+                                name={tab === 'notes' ? 'document-text-outline' : 'images-outline'}
+                                size={14}
+                                color={active ? accent : textMuted}
+                              />
+                              <Text style={[styles.sheetSegTxt, { color: active ? accent : textMuted }]}>
+                                {tab === 'notes' ? 'Notes' : 'Memories'}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+
+                      {sheetTab === 'notes' ? (
+                        <>
+                          {(sel.notes || []).length === 0 ? (
+                            <Text style={[styles.hint, { color: textFaint, marginTop: 16 }]}>
+                              No notes yet — add one below
+                            </Text>
+                          ) : (
+                            (sel.notes || []).map((n) => (
+                              <View
+                                key={n.id}
+                                style={[
+                                  styles.noteCard,
+                                  {
+                                    borderColor:
+                                      n.user_id === user?.id
+                                        ? hexAlpha(accent, 0.35)
+                                        : hexAlpha(cardBorder, 0.6),
+                                  },
+                                ]}
+                              >
+                                <Text style={[styles.noteWho, { color: textMuted }]}>
+                                  {n.user_id === user?.id ? 'You' : 'Partner'}
+                                </Text>
+                                <Text style={[styles.noteBody, { color: text }]}>{n.notes || ''}</Text>
+                                {n.rating ? (
+                                  <Text style={{ color: accent, marginTop: 6, letterSpacing: 2 }}>
+                                    {'★'.repeat(n.rating)}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            ))
+                          )}
+
+                          <Text style={[styles.section, { color: textMuted }]}>Add note</Text>
+                          <TextInput
+                            value={noteText}
+                            onChangeText={setNoteText}
+                            multiline
+                            placeholder="How was it?"
+                            placeholderTextColor={textFaint}
+                            style={[
+                              styles.noteIn,
+                              {
+                                color: text,
+                                borderColor: hexAlpha(cardBorder, 0.65),
+                                backgroundColor: hexAlpha(inputBg, 0.35),
+                              },
+                            ]}
+                          />
+                          <View style={styles.noteActions}>
+                            <StarRow
+                              value={noteRating}
+                              onChange={setNoteRating}
+                              disabled={dateBusy}
+                              accent={accent}
+                            />
+                            <Pressable
+                              style={[
+                                styles.cta,
+                                { backgroundColor: accent },
+                                (!noteText.trim() || dateBusy) && { opacity: 0.45 },
+                              ]}
+                              onPress={addDiaryNote}
+                              disabled={!noteText.trim() || dateBusy}
+                            >
+                              <Text style={styles.ctaTxt}>Save</Text>
+                            </Pressable>
+                          </View>
+                        </>
+                      ) : (
+                        <>
+                          <Pressable
+                            style={[styles.photoBtn, { borderColor: hexAlpha(accent, 0.35) }]}
+                            onPress={pickDiaryPhoto}
+                            disabled={photoBusy}
+                          >
+                            <Ionicons name="image-outline" size={16} color={accent} />
+                            <Text style={[styles.photoBtnTxt, { color: accent }]}>
+                              {photoBusy ? 'Uploading…' : 'Link polaroid'}
+                            </Text>
+                          </Pressable>
+
+                          {(sel.photos || []).length === 0 ? (
+                            <Text style={[styles.hint, { color: textFaint, marginTop: 14 }]}>
+                              No memories linked to this date yet
+                            </Text>
+                          ) : (
+                            <View style={styles.memoryGrid}>
+                              {(sel.photos || []).map((ph) => {
+                                const url = ph.photo_wall?.imageUrl;
+                                if (!url) return null;
+                                return (
+                                  <View key={ph.id} style={styles.memoryCell}>
+                                    <Image source={{ uri: url }} style={styles.memoryImg} resizeMode="cover" />
+                                    {ph.photo_wall?.caption ? (
+                                      <Text style={[styles.memoryCaption, { color: textMuted }]} numberOfLines={2}>
+                                        {ph.photo_wall.caption}
+                                      </Text>
+                                    ) : null}
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <Text style={[styles.hint, { color: textFaint, marginTop: 20 }]}>
+                      Mark this date finished to add notes and memories
+                    </Text>
+                  )}
+                </ScrollView>
+              ) : null}
+            </View>
           </View>
         </View>
       </Modal>
@@ -380,46 +658,347 @@ export function GoalsModule() {
 }
 
 const styles = StyleSheet.create({
-  shell: { flex: 1, borderRadius: 18, overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(16,16,20,0.78)' },
-  toolbar: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.06)' },
-  tab: { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  tabTxt: { fontSize: 11, fontWeight: '900', letterSpacing: 3, textTransform: 'uppercase', color: '#71717a' },
-  filters: { flexDirection: 'row', gap: 8, paddingHorizontal: 10, paddingVertical: 8 },
-  chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.04)' },
-  chipTxt: { fontSize: 10, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase', color: '#71717a' },
-  body: { flex: 1, paddingHorizontal: 12, paddingBottom: 0 },
-  addRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  addIn: { flex: 1, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#3f3f46', color: '#fafafa', paddingVertical: 8, fontSize: 14 },
-  addBtn: { justifyContent: 'center', paddingHorizontal: 16, borderRadius: 12 },
-  addBtnTxt: { fontSize: 11, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase', color: '#0a0a0c' },
-  goalRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.04)' },
-  checkbox: { paddingTop: 4 },
-  dot: { width: 16, height: 16, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: '#52525b' },
-  goalTxt: { flex: 1, color: '#e4e4e7', fontSize: 14, fontWeight: '600' },
-  goalDone: { textDecorationLine: 'line-through', color: '#71717a' },
-  kill: { color: '#71717a', paddingHorizontal: 6, fontSize: 16 },
-  empty: { textAlign: 'center', color: '#52525b', marginTop: 28, fontSize: 12 },
-  formBox: { gap: 8, marginBottom: 10 },
-  field: { borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 10, paddingVertical: 8, color: '#fafafa', backgroundColor: 'rgba(10,12,22,0.35)', fontSize: 13 },
-  dateRow: { flexDirection: 'row', gap: 10, alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.04)' },
-  bullet: { width: 10, height: 10, borderRadius: 5, marginTop: 4 },
-  dateTitle: { fontSize: 14, fontWeight: '700', color: '#fafafa' },
-  dateSub: { marginTop: 2, fontSize: 11, color: '#71717a' },
-  chev: { color: '#52525b', fontSize: 18 },
-  modalWrap: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: '#141418', padding: 22, borderTopLeftRadius: 26, borderTopRightRadius: 26, maxHeight: '88%' },
-  back: { color: '#f472b6', fontSize: 11, fontWeight: '900', letterSpacing: 2, marginBottom: 10 },
-  mTitle: { fontSize: 20, fontWeight: '900', color: '#fafafa', textTransform: 'uppercase' },
-  mSub: { marginTop: 4, fontSize: 12, color: '#a1a1aa' },
-  mLoc: { marginTop: 6, fontSize: 12, color: '#f472b6bb' },
-  doneBtn: { alignSelf: 'flex-start', marginTop: 12, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.12)' },
-  doneTxt: { fontSize: 11, fontWeight: '900', letterSpacing: 2, color: '#e4e4e7', textTransform: 'uppercase' },
-  section: { marginTop: 18, fontSize: 10, fontWeight: '900', letterSpacing: 3, color: '#71717a', textTransform: 'uppercase' },
-  noteCard: { marginTop: 8, padding: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(255,255,255,0.03)' },
-  noteWho: { fontSize: 9, fontWeight: '900', letterSpacing: 2, color: '#a1a1aa', textTransform: 'uppercase' },
-  noteBody: { marginTop: 6, fontSize: 13, color: '#e4e4e7', lineHeight: 20 },
-  noteIn: { marginTop: 8, minHeight: 80, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)', padding: 12, color: '#fafafa', textAlignVertical: 'top' },
-  photoBtn: { marginTop: 10, padding: 12, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(244,114,182,0.35)', alignItems: 'center' },
-  photoBtnTxt: { fontSize: 12, fontWeight: '800', color: '#f472b6' },
-  photoLine: { marginTop: 6, fontSize: 12, color: '#a1a1aa' },
+  wrap: {
+    flex: 1,
+    paddingTop: 4,
+    minHeight: 0,
+  },
+  content: {
+    flex: 1,
+    minHeight: 0,
+    paddingHorizontal: 8,
+  },
+  seg: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 10,
+    padding: 4,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  segBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+    gap: 6,
+  },
+  segIcon: { marginTop: 1 },
+  segTxt: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  filters: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  chipTxt: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  composeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingBottom: 10,
+    marginBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  composeIn: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+  },
+  cta: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  ctaTxt: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    color: '#0a0a0c',
+  },
+  list: { flex: 1 },
+  goalRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  checkbox: { paddingTop: 2 },
+  checkRing: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goalTxt: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
+  deleteSpacer: { width: 17 },
+  empty: {
+    textAlign: 'center',
+    marginTop: 32,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  dateForm: {
+    gap: 4,
+    marginBottom: 8,
+  },
+  fieldLab: {
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 3,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  fieldIn: {
+    fontSize: 13,
+    fontWeight: '600',
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  dateRowInputs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dateField: { flex: 1 },
+  dateRow: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  datePip: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  dateMeta: { flex: 1 },
+  dateTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dateSub: {
+    marginTop: 3,
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetAnchor: {
+    maxHeight: '88%',
+  },
+  sheet: {
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+    maxHeight: '100%',
+  },
+  sheetScroll: { flexGrow: 0 },
+  sheetPad: {
+    paddingHorizontal: 22,
+    paddingBottom: 28,
+    paddingTop: 10,
+  },
+  sheetHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 4,
+  },
+  sheetHeaderMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sheetClose: {
+    paddingTop: 2,
+    paddingLeft: 4,
+  },
+  sheetSeg: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 20,
+    marginBottom: 4,
+    padding: 4,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  sheetSegBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+    gap: 6,
+  },
+  sheetSegTxt: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  mTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  mSub: {
+    marginTop: 4,
+    fontSize: 12,
+  },
+  locRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 6,
+  },
+  mLoc: {
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+  doneBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  doneTxt: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  section: {
+    marginTop: 22,
+    marginBottom: 8,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 3,
+    textTransform: 'uppercase',
+  },
+  hint: {
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  noteCard: {
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: 'transparent',
+  },
+  noteWho: {
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  noteBody: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  noteIn: {
+    minHeight: 88,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 12,
+    textAlignVertical: 'top',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  noteActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  starRow: { flexDirection: 'row', gap: 4 },
+  photoBtn: {
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  photoBtnTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  memoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 14,
+  },
+  memoryCell: {
+    width: '47%',
+    flexGrow: 1,
+    maxWidth: '48%',
+  },
+  memoryImg: {
+    width: '100%',
+    aspectRatio: 4 / 5,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  memoryCaption: {
+    marginTop: 6,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '600',
+  },
 });
