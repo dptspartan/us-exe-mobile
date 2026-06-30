@@ -77,7 +77,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       try {
         const profile = await networkUtility.getCoupleProfile(user.id);
-        if (!cancelled) setCoupleProfile(profile as Record<string, unknown> | null);
+        if (cancelled) return;
+        setCoupleProfile(profile as Record<string, unknown> | null);
+        const id = (profile as { id?: string } | null)?.id;
+        if (id) {
+          await networkUtility.prefetchCoupleData(id, user.id);
+        }
       } catch {
         if (!cancelled) setCoupleProfile(null);
       } finally {
@@ -108,11 +113,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [user?.id, coupleProfile]);
 
   const coupleId = (coupleProfile?.id as string) ?? null;
-
-  useEffect(() => {
-    if (!coupleId || !user?.id) return;
-    void networkUtility.prefetchCoupleData(coupleId, user.id);
-  }, [coupleId, user?.id]);
 
   const value = useMemo(
     (): AppCtx => ({

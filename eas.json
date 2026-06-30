@@ -12,7 +12,9 @@
         "buildType": "apk"
       },
       "env": {
-        "APP_ENV": "development"
+        "APP_ENV": "development",
+        "EXPO_PUBLIC_ENV": "dev",
+        "EAS_BUILD": "true"
       }
     },
     "development-simulator": {
@@ -30,7 +32,9 @@
         "buildType": "apk"
       },
       "env": {
-        "APP_ENV": "preview"
+        "APP_ENV": "preview",
+        "EXPO_PUBLIC_ENV": "prod",
+        "EAS_BUILD": "true"
       }
     },
     "production": {
@@ -39,7 +43,9 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "APP_ENV": "production"
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_ENV": "prod",
+        "EAS_BUILD": "true"
       }
     }
   },

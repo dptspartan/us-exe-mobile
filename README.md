@@ -4,22 +4,27 @@ Native companion for the **`us-exe-web`** dashboard: same Supabase project, coup
 
 ## Setup
 
-1. Copy `env.example.txt` to `.env` in **this folder** (Expo loads `EXPO_PUBLIC_*` automatically):
+### Environment files
+
+| File | Use |
+|------|-----|
+| `.env.dev` | Local dev + EAS **development** builds (staging Supabase) |
+| `.env.prod` | EAS **preview** / **production** builds (prod Supabase) |
+| `.env` | Optional fallback for `expo start` without flags |
 
 ```bash
-cp env.example.txt .env
+cp env.dev.example.txt .env.dev    # dev / staging Supabase
+cp env.prod.example.txt .env.prod  # prod Supabase (EAS preview/release)
 ```
 
-2. Paste the **same values** as `us-exe-web/.env.local`, but rename keys:
+Fill in `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` from the matching Supabase project (**Project Settings → API**).
 
-   - `EXPO_PUBLIC_SUPABASE_URL` ← web `VITE_SUPABASE_URL`
-   - `EXPO_PUBLIC_SUPABASE_ANON_KEY` ← web `VITE_SUPABASE_PUBLISHABLE_KEY`
-
-3. Install and run:
+### Run locally
 
 ```bash
 npm install
-npx expo start
+npm run start:dev    # dev client + .env.dev (recommended)
+# or: npx expo start  # uses .env if present
 ```
 
 **Expo SDK 54** — Expo Go only matches the stock SDK. This repo includes **`expo-dev-client`** plus **EAS** profiles so you can ship custom native code (e.g. dev menu, same as production modules) while testing.
@@ -68,6 +73,56 @@ Re-run `npx expo prebuild --platform android` only when native config changes; i
 
 Profiles live in **`eas.json`**: `development`, `development-simulator` (iOS sim), `preview`, `production`.
 
+### Dev vs production (side-by-side installs)
+
+Like the two Supabase projects, dev builds use a **separate EAS project** and install as a **different app** on your phone so they never overwrite production.
+
+| | Production (`preview` / `production`) | Development (`development`) |
+|--|--|--|
+| Home screen name | **Us.exe Mobile** | **Us.exe Dev** |
+| Android package | `com.anonymous.usexemobile` | `com.anonymous.usexemobile.dev` |
+| EAS slug / project | `us-exe-mobile` | `us-exe-mobile-dev` |
+| Supabase | `.env.prod` / prod secrets | `.env.dev` / dev secrets |
+| Expo project | existing (`app.json` `projectId`) | new — `EAS_PROJECT_ID_DEV` in `.env.dev` |
+
+**One-time dev EAS setup:**
+
+```bash
+cp env.dev.example.txt .env.dev   # if you have not already
+# fill in dev Supabase URL + anon key
+npm run eas:init:dev              # creates us-exe-mobile-dev on expo.dev
+```
+
+That saves `EAS_PROJECT_ID_DEV` into `.env.dev`. With dynamic `app.config.js`, EAS cannot auto-write the ID — the init script captures it for you. If init fails, create the project at [expo.dev](https://expo.dev/accounts/dptspartan/projects) (slug `us-exe-mobile-dev`) and paste the ID into `.env.dev`.
+
+**Build & install dev APK** (does not replace production):
+
+```bash
+npm run eas:dev:android
+```
+
+Pair with `npm run start:dev` for live JS. Uninstall dev only: `npm run android:uninstall:dev`.
+
+**Push notifications on dev (optional):** add Android app `com.anonymous.usexemobile.dev` in Firebase, download `google-services.dev.json` into this folder, and upload FCM credentials to the **dev** Expo project on expo.dev. Without that file, dev builds still work — push is just disabled on the dev app.
+
+**GitHub Actions (dev branch deploy):** add secret `EAS_PROJECT_ID_DEV` alongside `EXPO_PUBLIC_SUPABASE_URL_DEV` / `EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV`. Trigger manually via **Actions → Deploy dev APK (EAS)**.
+
+## End-to-end encryption (E2EE)
+
+Couple content is encrypted client-side with a per-couple key (CEK) from the `get-couple-cek` edge function. Mobile matches the web envelope format (`enc:v1:` text + AES-GCM JSON blobs).
+
+**Backend prerequisite:** deploy `get-couple-cek` with `E2EE_MASTER_KEY` on the Supabase project you are testing against (dev first, then prod).
+
+**What is encrypted:** letters, sticky notes, goals, diary, jam links, triggers, doodle strokes, photo bytes, realtime broadcast payloads.
+
+**First login after deploy:** `prefetchCoupleData` fetches the CEK and runs a background migration for legacy plaintext rows. Until the backend is ready, the app still works — content stays plaintext (dual-read).
+
+```bash
+npm test                    # envelope round-trip unit tests
+```
+
+Manual cross-client checks: see `src/crypto/e2ee.checklist.ts`.
+
 ## Tag-based preview deploy (GitHub Actions + EAS)
 
 **`main` does not auto-build.** A preview APK is produced when you tag a commit on `main` (same `v*` convention as `us-exe-web`) or run the workflow manually.
@@ -96,8 +151,8 @@ In **Settings → Secrets and variables → Actions** for `us-exe-mobile`:
 | Secret | Purpose |
 |--------|---------|
 | `EXPO_TOKEN` | [expo.dev](https://expo.dev) → Account → Access tokens |
-| `EXPO_PUBLIC_SUPABASE_URL` | Same value as web `VITE_SUPABASE_URL` |
-| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Same value as web `VITE_SUPABASE_PUBLISHABLE_KEY` |
+| `EXPO_PUBLIC_SUPABASE_URL` | Production Supabase URL (preview/release builds) |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Production Supabase anon key |
 
 FCM / `google-services.json` must already be configured on Expo (see **`PUSH_SETUP.md`**).
 

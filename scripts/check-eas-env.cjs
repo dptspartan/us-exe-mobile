@@ -1,34 +1,40 @@
 /**
  * Ensures Supabase EXPO_PUBLIC_* vars are present before `eas build`.
- * Reads .env via @expo/env (same as Expo CLI) and falls back to process.env (CI).
+ * Usage: node scripts/check-eas-env.cjs [path-to-env-file]
  */
 const path = require('path');
 const { existsSync } = require('fs');
 const { load } = require('@expo/env');
+const { readEnvFileVars } = require('./read-env-file.cjs');
 
 const root = path.join(__dirname, '..');
-const envPath = path.join(root, '.env');
+const envFile = process.argv[2] || '.env.prod';
+const envPath = path.isAbsolute(envFile) ? envFile : path.join(root, envFile);
 
-load(root);
+if (!existsSync(envPath)) {
+  console.error(`\n[eas-env] Missing ${envFile} — copy env.prod.example.txt (or env.dev.example.txt) first.\n`);
+  process.exit(1);
+}
 
-const url = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? '').trim();
-const key = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '').trim();
+load(root, { silent: true, path: envPath });
+const fileVars = readEnvFileVars(envPath);
+
+const url = (
+  process.env.EXPO_PUBLIC_SUPABASE_URL ?? fileVars.EXPO_PUBLIC_SUPABASE_URL ?? ''
+).trim();
+const key = (
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? fileVars.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? ''
+).trim();
 
 if (!url || !key) {
-  if (!existsSync(envPath)) {
-    console.error(
-      '\n[eas-env] Missing .env — copy env.example.txt to .env and set EXPO_PUBLIC_SUPABASE_*.\n',
-    );
-  } else {
-    console.error(
-      '\n[eas-env] EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY must be non-empty.\n',
-    );
-  }
+  console.error(
+    `\n[eas-env] EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY must be non-empty in ${envFile}.\n`,
+  );
   console.error(
     'GitHub Actions: set repo secrets with the same names.\n' +
-      'Local builds: fill us-exe-mobile/.env then rerun eas build.\n',
+      `Local builds: fill us-exe-mobile/${envFile} then rerun eas build.\n`,
   );
   process.exit(1);
 }
 
-console.log('[eas-env] Supabase config present for EAS build.');
+console.log(`[eas-env] Supabase config present (${envFile}).`);

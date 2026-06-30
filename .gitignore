@@ -32,6 +32,8 @@ yarn-error.*
 
 # local env files
 .env
+.env.dev
+.env.prod
 .env*.local
 
 # typescript
@@ -43,3 +45,5 @@ yarn-error.*
 
 # Firebase service account (upload to Expo only — never commit)
 *firebase-adminsdk*.json
+google-services.dev.json
+google-services.json

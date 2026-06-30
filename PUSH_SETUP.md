@@ -45,7 +45,9 @@ Expo Push on Android uses Firebase Cloud Messaging. You need **both**:
 
 Means the installed APK was built **without** `google-services.json` embedded. Fix `googleServicesFile` placement, run `eas:preview:android:clean`, uninstall old app, reinstall new APK. Uploading FCM V1 to Expo alone does not fix this error.
 
-EAS project ID (already in `app.json`): `ef0ca527-53b7-4e6a-bde9-afde99890794`
+EAS project ID (production, in `app.json`): `ef0ca527-53b7-4e6a-bde9-afde99890794`
+
+Dev builds use package `com.anonymous.usexemobile.dev` and a separate EAS project — see README **Dev vs production**. Add that package in Firebase and place `google-services.dev.json` in this folder for dev push.
 
 ## 3. Edge function + webhook
 

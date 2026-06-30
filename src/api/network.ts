@@ -6,6 +6,26 @@ import {
   setCachedSignedUrl,
   clearSignedUrlCache,
 } from '../cache/imageUrlCache';
+import {
+  clearCoupleKey,
+  ensureCoupleKey,
+  getMigrationVersion,
+  migrateCoupleContent,
+  MIGRATION_TARGET_VERSION,
+} from '../crypto';
+import {
+  clearPhotoDisplayCache,
+  decryptBroadcastPayload,
+  encryptBroadcastPayload,
+  maybeDecryptJson,
+  maybeDecryptText,
+  maybeEncryptJson,
+  maybeEncryptText,
+  decryptRowsTexts,
+  decryptRowTexts,
+  encryptBytes,
+  resolvePhotoDisplayUrl,
+} from './e2eeBoundary';
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -106,7 +126,9 @@ function attachCoupleChannelHandlers(entry, coupleId) {
 
   for (const evt of ['doodle_stroke', 'doodle_clear', 'doodle_undo']) {
     channel.on('broadcast', { event: evt }, ({ payload }) => {
-      entry.doodleListeners.forEach((fn) => fn({ event: evt, ...payload }));
+      void decryptBroadcastPayload(coupleId, payload ?? {}).then((dec) => {
+        entry.doodleListeners.forEach((fn) => fn({ event: evt, ...dec }));
+      });
     });
   }
 
@@ -196,7 +218,6 @@ export const networkUtility = {
    */
   async getCurrentUser() {
     const { data: { user }, error } = await supabase.auth.getUser();
-    console.log("Session check result:", { user, error });
     if (error) {
       console.error("Error fetching current user:", error.message);
       return null;
@@ -253,6 +274,8 @@ export const networkUtility = {
   async signOut() {
     const { error } = await supabase.auth.signOut();
     if (error) console.error("Error signing out:", error.message);
+    clearCoupleKey();
+    clearPhotoDisplayCache();
     clearSignedUrlCache();
     await dataCache.clearAll();
     for (const coupleId of [...coupleSyncChannels.keys()]) {
@@ -264,10 +287,12 @@ export const networkUtility = {
    * Updates or inserts (Upserts) the current user's flip letter.
    */
   async updateFlipLetter(coupleId, authorId, textContent) {
+    const cek = await ensureCoupleKey(coupleId);
+    const content = maybeEncryptText(cek, textContent);
     const { data, error } = await supabase
       .from('flip_letters')
       .upsert(
-        { couple_id: coupleId, author_id: authorId, content: textContent, updated_at: new Date() },
+        { couple_id: coupleId, author_id: authorId, content, updated_at: new Date() },
         { onConflict: 'couple_id,author_id' }
       )
       .select();
@@ -345,6 +370,7 @@ export const networkUtility = {
 
   async getFlipLetters(coupleId) {
     return readThroughCache(cacheKeys.flipLetters(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('flip_letters')
         .select('*')
@@ -353,14 +379,15 @@ export const networkUtility = {
         console.error("Error fetching flip letters:", error.message);
         return [];
       }
-      return data || [];
+      return decryptRowsTexts(cek, data || [], ['content']);
     });
   },
 
   async createTodo(coupleId, task) {
+    const cek = await ensureCoupleKey(coupleId);
     const { data, error } = await supabase
       .from('todos')
-      .insert({ couple_id: coupleId, task, is_completed: false })
+      .insert({ couple_id: coupleId, task: maybeEncryptText(cek, task), is_completed: false })
       .select()
       .single();
     if (error) {
@@ -368,7 +395,7 @@ export const networkUtility = {
       throw error;
     }
     broadcastDataRefresh(coupleId, 'todos');
-    return data;
+    return decryptRowTexts(cek, data, ['task']);
   },
 
   async toggleTodo(todoId, isCompleted) {
@@ -396,12 +423,13 @@ export const networkUtility = {
   },
 
   async sendStickyNote(coupleId, authorId, content) {
+    const cek = await ensureCoupleKey(coupleId);
     const { data, error } = await supabase
       .from('sticky_notes')
       .insert({
         couple_id: coupleId,
         author_id: authorId,
-        content,
+        content: maybeEncryptText(cek, content),
         is_cleared: false,
       })
       .select()
@@ -417,6 +445,7 @@ export const networkUtility = {
 
   async getPhotos(coupleId) {
     return readThroughCache(cacheKeys.photos(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('photo_wall')
         .select('*')
@@ -426,7 +455,7 @@ export const networkUtility = {
         console.error("Error fetching photos:", error.message);
         return [];
       }
-      return data || [];
+      return decryptRowsTexts(cek, data || [], ['caption']);
     });
   },
 
@@ -435,7 +464,12 @@ export const networkUtility = {
       const photos = await this.getPhotos(coupleId);
       const withUrls = await Promise.all(
         photos.map(async (photo) => {
-          const url = await this.getPhotoSignedUrl(photo.storage_path, expiresIn);
+          const url = await resolvePhotoDisplayUrl(
+            coupleId,
+            photo.storage_path,
+            photo.encryption_meta,
+            expiresIn,
+          );
           return { ...photo, imageUrl: url };
         })
       );
@@ -443,7 +477,10 @@ export const networkUtility = {
     });
   },
 
-  async getPhotoSignedUrl(storagePath, expiresIn = 3600) {
+  async getPhotoSignedUrl(storagePath, expiresIn = 3600, coupleId = null, encryptionMeta = null) {
+    if (coupleId && encryptionMeta) {
+      return resolvePhotoDisplayUrl(coupleId, storagePath, encryptionMeta, expiresIn);
+    }
     const cached = getCachedSignedUrl(storagePath);
     if (cached) return cached;
 
@@ -490,6 +527,7 @@ export const networkUtility = {
    */
   async getActiveIncomingNotes(coupleId, currentUserId) {
     return readThroughCache(cacheKeys.stickyNotes(coupleId, currentUserId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('sticky_notes')
         .select('*')
@@ -499,7 +537,7 @@ export const networkUtility = {
         .order('created_at', { ascending: true });
 
       if (error) console.error("Error fetching sticky notes:", error.message);
-      return data || [];
+      return decryptRowsTexts(cek, data || [], ['content']);
     });
   },
 
@@ -523,6 +561,7 @@ export const networkUtility = {
    */
   async getTodos(coupleId) {
     return readThroughCache(cacheKeys.todos(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('todos')
         .select('*')
@@ -530,7 +569,7 @@ export const networkUtility = {
         .order('created_at', { ascending: false });
 
       if (error) console.error("Error fetching to-dos:", error.message);
-      return data || [];
+      return decryptRowsTexts(cek, data || [], ['task']);
     });
   },
 
@@ -539,6 +578,7 @@ export const networkUtility = {
    */
   async uploadPhotoToWall(coupleId, userId, file, caption = "", sourceType = "photo") {
     try {
+      const cek = await ensureCoupleKey(coupleId);
       const isRnPick =
         file &&
         typeof file === 'object' &&
@@ -576,6 +616,21 @@ export const networkUtility = {
         uploadPayload = file;
       }
 
+      let encryptionMeta = null;
+      if (cek && uploadPayload) {
+        const raw =
+          uploadPayload instanceof ArrayBuffer
+            ? new Uint8Array(uploadPayload)
+            : uploadPayload instanceof Uint8Array
+            ? uploadPayload
+            : new Uint8Array(await uploadPayload.arrayBuffer?.() ?? uploadPayload);
+        const mime = uploadOpts.contentType || 'image/jpeg';
+        uploadPayload = encryptBytes(cek, raw);
+        // Keep image/* content-type — memories bucket rejects application/octet-stream.
+        uploadOpts.contentType = mime;
+        encryptionMeta = { v: 1, mime };
+      }
+
       const { error: storageError } = await supabase.storage
         .from('memories')
         .upload(filePath, uploadPayload, {
@@ -597,8 +652,9 @@ export const networkUtility = {
           couple_id: coupleId,
           uploaded_by: userId,
           storage_path: filePath,
-          caption: caption,
+          caption: maybeEncryptText(cek, caption),
           source_type: sourceType,
+          encryption_meta: encryptionMeta,
         })
         .select();
 
@@ -641,6 +697,7 @@ export const networkUtility = {
    */
   async getActiveJamSessions(coupleId) {
     return readThroughCache(cacheKeys.jamSessions(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('link_drops')
         .select('*')
@@ -652,7 +709,9 @@ export const networkUtility = {
         console.error("Error fetching jam sessions:", error.message);
         return [];
       }
-      return data || [];
+      return (data || []).map((row) =>
+        decryptRowTexts(cek, row, ['title', 'url']),
+      );
     });
   },
 
@@ -672,8 +731,12 @@ export const networkUtility = {
       .eq('couple_id', coupleId)
       .eq('is_open', true);
 
+    const cek = await ensureCoupleKey(coupleId);
     const tag = `[${sessionType}]`;
-    const toClose = (open || []).filter((r) => r.title?.startsWith(tag)).map((r) => r.id);
+    const toClose = (open || [])
+      .map((r) => decryptRowTexts(cek, r, ['title']))
+      .filter((r) => String(r.title ?? '').startsWith(tag))
+      .map((r) => r.id as string);
     if (toClose.length === 0) return;
 
     await supabase.from('link_drops').update({ is_open: false }).in('id', toClose);
@@ -681,13 +744,14 @@ export const networkUtility = {
 
   async startJamSession(coupleId, userId, sessionType, title, url) {
     await this.closeJamSessionsOfType(coupleId, sessionType);
+    const cek = await ensureCoupleKey(coupleId);
 
     const encodedTitle = `[${sessionType}] ${title}`;
     const row = {
       couple_id: coupleId,
       creator_id: userId,
-      title: encodedTitle,
-      url: url.trim(),
+      title: maybeEncryptText(cek, encodedTitle),
+      url: maybeEncryptText(cek, url.trim()),
       is_open: true,
       session_type: sessionType,
     };
@@ -723,10 +787,16 @@ export const networkUtility = {
    * Configures or updates the user's custom trigger settings in the database.
    */
   async saveTriggerConfig(coupleId, userId, type, payloadObj) {
+    const cek = await ensureCoupleKey(coupleId);
     const { data, error } = await supabase
       .from('dynamic_triggers')
       .upsert(
-        { couple_id: coupleId, creator_id: userId, trigger_type: type, payload: payloadObj },
+        {
+          couple_id: coupleId,
+          creator_id: userId,
+          trigger_type: type,
+          payload: maybeEncryptJson(cek, payloadObj),
+        },
         { onConflict: 'couple_id,creator_id' }
       )
       .select();
@@ -735,17 +805,18 @@ export const networkUtility = {
     return data;
   },
 
-  /**
-   * Fetches the current configurations for both partners' buttons.
-   */
   async getTriggerConfigs(coupleId) {
+    const cek = await ensureCoupleKey(coupleId);
     const { data, error } = await supabase
       .from('dynamic_triggers')
       .select('*')
       .eq('couple_id', coupleId);
 
     if (error) console.error("Error fetching trigger configurations:", error.message);
-    return data || [];
+    return (data || []).map((row) => ({
+      ...row,
+      payload: maybeDecryptJson(cek, row.payload) ?? {},
+    }));
   },
 
   _getCoupleBroadcastEntry(coupleId) {
@@ -755,7 +826,9 @@ export const networkUtility = {
       const channel = supabase
         .channel(topic, { config: { broadcast: { self: false } } })
         .on('broadcast', { event: 'signal_pulse' }, ({ payload }) => {
-          listeners.forEach((fn) => fn(payload));
+          listeners.forEach((fn) => {
+            void decryptBroadcastPayload(coupleId, payload).then(fn);
+          });
         })
         .subscribe();
       coupleBroadcastChannels.set(topic, { channel, listeners });
@@ -769,11 +842,13 @@ export const networkUtility = {
   sendLiveSignal(coupleId, payload) {
     const { channel } = this._getCoupleBroadcastEntry(coupleId);
     const transmit = () =>
-      channel.send({
-        type: 'broadcast',
-        event: 'signal_pulse',
-        payload,
-      });
+      void encryptBroadcastPayload(coupleId, payload).then((encPayload) =>
+        channel.send({
+          type: 'broadcast',
+          event: 'signal_pulse',
+          payload: encPayload,
+        }),
+      );
 
     if (channel.state === 'joined') {
       transmit();
@@ -805,6 +880,7 @@ export const networkUtility = {
   
   async getDiaryDates(coupleId) {
     return readThroughCache(cacheKeys.diaryDates(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('date_diary')
         .select(`
@@ -843,16 +919,26 @@ export const networkUtility = {
             (date.date_diary_photos || []).map(async (link) => {
               const wall = link.photo_wall;
               if (!wall) return null;
-              const imageUrl = await this.getPhotoSignedUrl(wall.storage_path);
+              const imageUrl = await resolvePhotoDisplayUrl(
+                coupleId,
+                wall.storage_path,
+                wall.encryption_meta,
+              );
               if (!imageUrl) return null;
-              return { ...link, photo_wall: { ...wall, imageUrl } };
+              return {
+                ...link,
+                photo_wall: {
+                  ...decryptRowTexts(cek, wall, ['caption']),
+                  imageUrl,
+                },
+              };
             })
           );
           return {
-            ...date,
-            notes: (date.date_diary_notes || []).sort(
-              (a, b) => new Date(a.created_at) - new Date(b.created_at)
-            ),
+            ...decryptRowTexts(cek, date, ['title', 'location']),
+            notes: (date.date_diary_notes || [])
+              .map((n) => decryptRowTexts(cek, n, ['notes']))
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
             photos: photos.filter(Boolean),
           };
         })
@@ -863,13 +949,16 @@ export const networkUtility = {
   },
 
   async createDiaryDate(coupleId, payload) {
+    const cek = await ensureCoupleKey(coupleId);
     const { data, error } = await supabase
       .from('date_diary')
       .insert({
         couple_id: coupleId,
-        title: payload.title.trim(),
+        title: maybeEncryptText(cek, payload.title.trim()),
         scheduled_date: payload.scheduled_date,
-        location: payload.location?.trim() || null,
+        location: payload.location?.trim()
+          ? maybeEncryptText(cek, payload.location.trim())
+          : null,
         is_completed: false,
       })
       .select()
@@ -884,9 +973,17 @@ export const networkUtility = {
   },
 
   async updateDiaryDate(dateId, coupleId, updates) {
+    const cek = await ensureCoupleKey(coupleId);
+    const encUpdates = { ...updates };
+    if (typeof encUpdates.title === 'string') {
+      encUpdates.title = maybeEncryptText(cek, encUpdates.title);
+    }
+    if (typeof encUpdates.location === 'string') {
+      encUpdates.location = maybeEncryptText(cek, encUpdates.location);
+    }
     const { data, error } = await supabase
       .from('date_diary')
-      .update(updates)
+      .update(encUpdates)
       .eq('id', dateId)
       .select()
       .single();
@@ -924,14 +1021,15 @@ export const networkUtility = {
     if (coupleId) broadcastDataRefresh(coupleId, 'date_diary');
   },
 
-  async saveDiaryNote(dateId, userId, notes, rating = null) {
+  async saveDiaryNote(dateId, userId, notes, rating = null, coupleId = null) {
+    const cek = coupleId ? await ensureCoupleKey(coupleId) : null;
     const { data, error } = await supabase
       .from('date_diary_notes')
       .upsert(
         {
           date_diary_id: dateId,
           user_id: userId,
-          notes: notes.trim(),
+          notes: maybeEncryptText(cek, notes.trim()),
           rating: rating || null,
         },
         { onConflict: 'date_diary_id,user_id' }
@@ -948,6 +1046,7 @@ export const networkUtility = {
 
   /** Appends a new reflection (schema allows one row per user — we thread with timestamps). */
   async appendDiaryNote(dateId, userId, newNote, rating = null, coupleId) {
+    const cek = coupleId ? await ensureCoupleKey(coupleId) : null;
     const { data: existing } = await supabase
       .from('date_diary_notes')
       .select('notes, rating')
@@ -961,15 +1060,17 @@ export const networkUtility = {
       hour: 'numeric',
       minute: '2-digit',
     });
-    const combined = existing?.notes
-      ? `${existing.notes}\n\n— ${stamp}\n${newNote.trim()}`
+    const prior = existing?.notes ? maybeDecryptText(cek, existing.notes) : '';
+    const combined = prior
+      ? `${prior}\n\n— ${stamp}\n${newNote.trim()}`
       : newNote.trim();
 
     const data = await this.saveDiaryNote(
       dateId,
       userId,
       combined,
-      rating ?? existing?.rating ?? null
+      rating ?? existing?.rating ?? null,
+      coupleId,
     );
     if (coupleId) broadcastDataRefresh(coupleId, 'date_diary');
     return data;
@@ -1001,6 +1102,7 @@ export const networkUtility = {
   /** Map photo_wall id → date label for polaroid pins on the wall. */
   async getPhotoDateTags(coupleId) {
     return readThroughCache(cacheKeys.photoDateTags(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('date_diary')
         .select(
@@ -1019,9 +1121,10 @@ export const networkUtility = {
 
       const map = {};
       for (const diary of data || []) {
+        const title = maybeDecryptText(cek, diary.title);
         for (const link of diary.date_diary_photos || []) {
           map[link.photo_id] = {
-            title: diary.title,
+            title,
             scheduled_date: diary.scheduled_date,
           };
         }
@@ -1032,6 +1135,7 @@ export const networkUtility = {
 
   async getDoodleCanvas(coupleId, userId) {
     return readThroughCache(cacheKeys.doodleCanvas(coupleId), async () => {
+      const cek = await ensureCoupleKey(coupleId);
       const { data, error } = await supabase
         .from('doodle_canvas')
         .select('*')
@@ -1043,7 +1147,13 @@ export const networkUtility = {
         return null;
       }
 
-      if (data) return data;
+      const normalize = (row) => {
+        if (!row) return row;
+        const strokes = maybeDecryptJson(cek, row.strokes);
+        return { ...row, strokes: Array.isArray(strokes) ? strokes : [] };
+      };
+
+      if (data) return normalize(data);
 
       const { data: inserted, error: insertError } = await supabase
         .from('doodle_canvas')
@@ -1063,16 +1173,18 @@ export const networkUtility = {
             .select('*')
             .eq('couple_id', coupleId)
             .single();
-          return existing;
+          return normalize(existing);
         }
         console.error('Error creating doodle canvas:', insertError.message);
         return null;
       }
-      return inserted;
+      return normalize(inserted);
     });
   },
 
   async persistDoodleCanvas(coupleId, userId, strokes, expectedVersion) {
+    const cek = await ensureCoupleKey(coupleId);
+    const encStrokes = strokes?.length ? maybeEncryptJson(cek, strokes) : [];
     const { data: current } = await supabase
       .from('doodle_canvas')
       .select('*')
@@ -1084,7 +1196,7 @@ export const networkUtility = {
         .from('doodle_canvas')
         .insert({
           couple_id: coupleId,
-          strokes,
+          strokes: encStrokes,
           version: 1,
           updated_by: userId,
           updated_at: new Date().toISOString(),
@@ -1097,13 +1209,13 @@ export const networkUtility = {
     }
 
     if (current.version !== expectedVersion) {
-      return { data: current, conflict: true };
+      return { data: { ...current, strokes: maybeDecryptJson(cek, current.strokes) ?? [] }, conflict: true };
     }
 
     const { data, error } = await supabase
       .from('doodle_canvas')
       .update({
-        strokes,
+        strokes: encStrokes,
         version: expectedVersion + 1,
         updated_by: userId,
         updated_at: new Date().toISOString(),
@@ -1120,21 +1232,23 @@ export const networkUtility = {
         .select('*')
         .eq('couple_id', coupleId)
         .single();
-      return { data: remote, conflict: true };
+      return { data: { ...remote, strokes: maybeDecryptJson(cek, remote?.strokes) ?? [] }, conflict: true };
     }
 
     broadcastDataRefresh(coupleId, 'doodle_canvas');
-    return { data, conflict: false };
+    return { data: { ...data, strokes: maybeDecryptJson(cek, data.strokes) ?? [] }, conflict: false };
   },
 
   broadcastDoodleEvent(coupleId, event, payload) {
     const entry = getCoupleSyncEntry(coupleId);
     const transmit = () =>
-      entry.channel.send({
-        type: 'broadcast',
-        event,
-        payload,
-      });
+      void encryptBroadcastPayload(coupleId, payload).then((encPayload) =>
+        entry.channel.send({
+          type: 'broadcast',
+          event,
+          payload: encPayload,
+        }),
+      );
 
     if (entry.channel.state === 'joined') {
       transmit();
@@ -1164,21 +1278,16 @@ export const networkUtility = {
 
   async getSavedDoodles(coupleId, expiresIn = 3600) {
     return readThroughCache(cacheKeys.savedDoodles(coupleId), async () => {
-      const { data, error } = await supabase
-        .from('photo_wall')
-        .select('*')
-        .eq('couple_id', coupleId)
-        .eq('source_type', 'doodle')
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('Error fetching saved doodles:', error.message);
-        return [];
-      }
-
+      const photos = await this.getPhotos(coupleId);
+      const doodles = photos.filter((p) => p.source_type === 'doodle');
       const withUrls = await Promise.all(
-        (data || []).map(async (row) => {
-          const url = await this.getPhotoSignedUrl(row.storage_path, expiresIn);
+        doodles.map(async (row) => {
+          const url = await resolvePhotoDisplayUrl(
+            coupleId,
+            row.storage_path,
+            row.encryption_meta,
+            expiresIn,
+          );
           return url ? { ...row, imageUrl: url } : null;
         })
       );
@@ -1189,6 +1298,10 @@ export const networkUtility = {
   /** Warm common couple reads after login so modules render from cache first. */
   async prefetchCoupleData(coupleId, userId) {
     if (!coupleId || !userId) return;
+    await ensureCoupleKey(coupleId);
+    if (getMigrationVersion() < MIGRATION_TARGET_VERSION) {
+      void migrateCoupleContent(coupleId);
+    }
     await Promise.allSettled([
       this.getMoods(coupleId),
       this.getTodos(coupleId),
