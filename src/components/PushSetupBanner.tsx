@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { EXPO_CREDENTIALS_URL } from '../constants/env';
 import {
   getPushRegistrationState,
   registerForRemotePush,
   subscribePushRegistration,
 } from '../lib/pushTokens';
-
-const EXPO_CREDENTIALS_URL =
-  'https://expo.dev/accounts/dptspartan/projects/us-exe-mobile/credentials';
 
 type Props = {
   userId: string;
@@ -36,7 +34,7 @@ export function PushSetupBanner({ userId }: Props) {
         >
           <Text style={styles.btnText}>Try again</Text>
         </Pressable>
-        {showExpoLink ? (
+        {showExpoLink && EXPO_CREDENTIALS_URL ? (
           <Pressable
             style={[styles.btn, styles.btnSecondary]}
             onPress={() => void Linking.openURL(EXPO_CREDENTIALS_URL)}

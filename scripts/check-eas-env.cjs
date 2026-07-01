@@ -25,6 +25,10 @@ const url = (
 const key = (
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? fileVars.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? ''
 ).trim();
+const easProjectId = (
+  process.env.EAS_PROJECT_ID ?? fileVars.EAS_PROJECT_ID ?? ''
+).trim();
+const expoOwner = (process.env.EXPO_OWNER ?? fileVars.EXPO_OWNER ?? '').trim();
 
 if (!url || !key) {
   console.error(
@@ -35,6 +39,18 @@ if (!url || !key) {
       `Local builds: fill us-exe-mobile/${envFile} then rerun eas build.\n`,
   );
   process.exit(1);
+}
+
+const isProdEnvFile = envFile.includes('prod') || envFile === '.env';
+if (isProdEnvFile && !easProjectId) {
+  console.error(
+    `\n[eas-env] EAS_PROJECT_ID must be non-empty in ${envFile} for preview/production builds.\n`,
+  );
+  process.exit(1);
+}
+
+if (!expoOwner) {
+  console.warn(`[eas-env] EXPO_OWNER is not set in ${envFile} — Expo credentials links in the app will be hidden.`);
 }
 
 console.log(`[eas-env] Supabase config present (${envFile}).`);

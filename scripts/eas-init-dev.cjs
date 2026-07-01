@@ -9,7 +9,13 @@ const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
 const envDevPath = path.join(root, '.env.dev');
-const PROD_PROJECT_ID = 'ef0ca527-53b7-4e6a-bde9-afde99890794';
+const envProdPath = path.join(root, '.env.prod');
+const { readEnvFileVars } = require('./read-env-file.cjs');
+
+function readProdProjectId() {
+  const prodVars = readEnvFileVars(envProdPath);
+  return (process.env.EAS_PROJECT_ID ?? prodVars.EAS_PROJECT_ID ?? '').trim();
+}
 
 const devEnv = {
   APP_ENV: 'development',
@@ -50,14 +56,15 @@ function runInit() {
 }
 
 function extractProjectId(output) {
+  const prodProjectId = readProdProjectId();
   const linked = output.match(/linked \(ID:\s*([0-9a-f-]{36})\)/i);
-  if (linked?.[1] && linked[1] !== PROD_PROJECT_ID) return linked[1];
+  if (linked?.[1] && linked[1] !== prodProjectId) return linked[1];
 
   const created = output.match(/project ID[:\s]+([0-9a-f-]{36})/i);
-  if (created?.[1] && created[1] !== PROD_PROJECT_ID) return created[1];
+  if (created?.[1] && created[1] !== prodProjectId) return created[1];
 
   const uuids = [...output.matchAll(new RegExp(UUID_RE, 'gi'))].map((m) => m[0]);
-  return uuids.find((id) => id !== PROD_PROJECT_ID) ?? '';
+  return uuids.find((id) => id !== prodProjectId) ?? '';
 }
 
 const existing = readEnvDevProjectId();
@@ -85,7 +92,7 @@ if (!projectId) {
 [eas-init-dev] Could not detect a new dev project ID.
 
 Create it manually:
-  1. Open https://expo.dev/accounts/dptspartan/projects
+  1. Open https://expo.dev/accounts/<your-expo-owner>/projects
   2. New project → slug "us-exe-mobile-dev"
   3. Copy the project ID into .env.dev:
      EAS_PROJECT_ID_DEV=<paste-id-here>

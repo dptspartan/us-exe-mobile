@@ -73,7 +73,9 @@ async function waitForAuthSession(maxMs = 8000): Promise<boolean> {
 function formatTokenError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
   if (/firebase|fcm|google-services|Default FirebaseApp/i.test(msg)) {
-    return `Android FCM not configured: ${msg}. Upload FCM V1 credentials at expo.dev (project ef0ca527-53b7-4e6a-bde9-afde99890794), then run npm run eas:preview:android and reinstall.`;
+    const projectId = getEasProjectId();
+    const projectHint = projectId ? ` (project ${projectId})` : '';
+    return `Android FCM not configured: ${msg}. Upload FCM V1 credentials at expo.dev${projectHint}, then run npm run eas:preview:android and reinstall.`;
   }
   if (/projectId|project.?id/i.test(msg)) {
     return `Missing or invalid EAS projectId: ${msg}`;

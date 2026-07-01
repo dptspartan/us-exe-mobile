@@ -1,19 +1,20 @@
 import Constants from 'expo-constants';
 
-type SupabaseExtra = {
+type AppExtra = {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
+  expoCredentialsUrl?: string;
 };
 
 const legacy = Constants as {
-  manifest2?: { extra?: SupabaseExtra };
-  manifest?: { extra?: SupabaseExtra };
+  manifest2?: { extra?: AppExtra };
+  manifest?: { extra?: AppExtra };
 };
 
 const extra = (Constants.expoConfig?.extra ??
   legacy.manifest2?.extra ??
   legacy.manifest?.extra ??
-  {}) as SupabaseExtra;
+  {}) as AppExtra;
 
 /** Supabase public URL — inlined from EXPO_PUBLIC_* at bundle time, or app.config extra. */
 export const SUPABASE_URL =
@@ -22,6 +23,9 @@ export const SUPABASE_URL =
 /** Supabase anon (publishable) key */
 export const SUPABASE_ANON_KEY =
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? extra.supabaseAnonKey ?? '';
+
+/** Expo Android credentials page — set via EXPO_OWNER + EAS slug in app.config.js */
+export const EXPO_CREDENTIALS_URL = extra.expoCredentialsUrl ?? '';
 
 export function assertSupabaseConfig() {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {

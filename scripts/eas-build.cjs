@@ -66,6 +66,9 @@ const key = (
 const devProjectId = (
   process.env.EAS_PROJECT_ID_DEV ?? fileVars.EAS_PROJECT_ID_DEV ?? ''
 ).trim();
+const prodProjectId = (
+  process.env.EAS_PROJECT_ID ?? fileVars.EAS_PROJECT_ID ?? ''
+).trim();
 
 if (!url || !key) {
   fail(`EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY must be non-empty in ${envFile}.`);
@@ -75,6 +78,10 @@ if (profile === 'development' && !devProjectId) {
   fail(
     'EAS_PROJECT_ID_DEV must be set in .env.dev — run `npm run eas:init:dev` once to create the dev EAS project.',
   );
+}
+
+if ((profile === 'preview' || profile === 'production') && !prodProjectId) {
+  fail('EAS_PROJECT_ID must be set in .env.prod (see env.prod.example.txt).');
 }
 
 const environment = PROFILE_TO_ENV[profile];

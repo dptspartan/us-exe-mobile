@@ -56,10 +56,18 @@ const supabaseUrl =
 const supabaseAnonKey =
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? fileVars.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
-const prodProjectId = appJson.expo.extra?.eas?.projectId ?? '';
+const expoOwner = (process.env.EXPO_OWNER ?? fileVars.EXPO_OWNER ?? '').trim();
+const prodProjectId = (
+  process.env.EAS_PROJECT_ID ?? fileVars.EAS_PROJECT_ID ?? ''
+).trim();
 const devProjectId = (
   process.env.EAS_PROJECT_ID_DEV ?? fileVars.EAS_PROJECT_ID_DEV ?? ''
 ).trim();
+
+function expoCredentialsUrl(owner, slug) {
+  if (!owner || !slug) return '';
+  return `https://expo.dev/accounts/${owner}/projects/${slug}/credentials`;
+}
 
 function resolveGoogleServicesFile(androidPackage) {
   if (androidPackage === DEV_ANDROID_PACKAGE) {
@@ -93,12 +101,15 @@ module.exports = () => {
       );
     }
 
+    const devSlug = 'us-exe-mobile-dev';
+
     return {
       expo: {
         ...base,
         name: 'Us.exe Dev',
-        slug: 'us-exe-mobile-dev',
+        slug: devSlug,
         scheme: 'usexe-dev',
+        ...(expoOwner ? { owner: expoOwner } : {}),
         ios: {
           ...base.ios,
           bundleIdentifier: DEV_IOS_BUNDLE,
@@ -108,6 +119,7 @@ module.exports = () => {
           ...baseExtra,
           supabaseUrl,
           supabaseAnonKey,
+          expoCredentialsUrl: expoCredentialsUrl(expoOwner, devSlug),
           appEnv: 'development',
           ...(devProjectId ? { eas: { projectId: devProjectId } } : {}),
         },
@@ -115,12 +127,21 @@ module.exports = () => {
     };
   }
 
+  const prodSlug = base.slug ?? 'us-exe-mobile';
+
+  if (!prodProjectId && process.env.EAS_BUILD === 'true') {
+    console.warn(
+      '[app.config] EAS_PROJECT_ID is not set — add it to .env.prod (see env.prod.example.txt).',
+    );
+  }
+
   return {
     expo: {
       ...base,
       name: 'Us.exe Mobile',
-      slug: 'us-exe-mobile',
+      slug: prodSlug,
       scheme: 'usexe',
+      ...(expoOwner ? { owner: expoOwner } : {}),
       ios: {
         ...base.ios,
         bundleIdentifier: PROD_IOS_BUNDLE,
@@ -130,10 +151,9 @@ module.exports = () => {
         ...base.extra,
         supabaseUrl,
         supabaseAnonKey,
+        expoCredentialsUrl: expoCredentialsUrl(expoOwner, prodSlug),
         appEnv: 'production',
-        eas: {
-          projectId: prodProjectId,
-        },
+        ...(prodProjectId ? { eas: { projectId: prodProjectId } } : {}),
       },
     },
   };

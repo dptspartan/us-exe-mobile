@@ -64,11 +64,6 @@
     "notification": {
       "color": "#ec4899"
     },
-    "extra": {
-      "eas": {
-        "projectId": "ef0ca527-53b7-4e6a-bde9-afde99890794"
-      }
-    },
-    "owner": "dptspartan"
+    "extra": {}
   }
 }

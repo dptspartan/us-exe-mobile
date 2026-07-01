@@ -35,6 +35,7 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV }}
           EAS_PROJECT_ID_DEV: ${{ secrets.EAS_PROJECT_ID_DEV }}
+          EXPO_OWNER: ${{ secrets.EXPO_OWNER }}
         run: |
           if [[ -z "$EXPO_PUBLIC_SUPABASE_URL" || -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]]; then
             echo "::error::GitHub secrets EXPO_PUBLIC_SUPABASE_URL_DEV and EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV must be set."
@@ -44,8 +45,8 @@ jobs:
             echo "::error::GitHub secret EAS_PROJECT_ID_DEV must be set (run npm run eas:init:dev locally once)."
             exit 1
           fi
-          printf 'EXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_ANON_KEY=%s\nEAS_PROJECT_ID_DEV=%s\n' \
-            "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_ANON_KEY" "$EAS_PROJECT_ID_DEV" > .env.dev
+          printf 'EXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_ANON_KEY=%s\nEAS_PROJECT_ID_DEV=%s\nEXPO_OWNER=%s\n' \
+            "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_ANON_KEY" "$EAS_PROJECT_ID_DEV" "$EXPO_OWNER" > .env.dev
           npx eas-cli env:push development --path .env.dev --force
 
       - name: Build development APK on EAS
