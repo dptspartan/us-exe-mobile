@@ -56,6 +56,24 @@ function getActiveListenerCount(entry) {
   return count;
 }
 
+// `supabase.channel(topic)` reuses an existing, possibly-still-subscribed
+// RealtimeChannel object if one with the exact same topic string is still
+// registered on the client. `removeChannel()` below is fire-and-forget
+// (unsubscribe is async), so a re-subscribe for the same coupleId shortly
+// after a teardown can race ahead of that cleanup and be handed back the
+// old, already-`subscribe()`d channel — which then throws "cannot add
+// postgres_changes callbacks ... after subscribe()" when we try to attach
+// handlers to it. Suffixing the topic with a per-coupleId generation
+// counter guarantees every new entry gets a brand-new topic, so it can
+// never collide with a channel that's still mid-teardown.
+const coupleChannelGeneration = new Map();
+
+function nextCoupleChannelTopic(coupleId) {
+  const gen = (coupleChannelGeneration.get(coupleId) ?? 0) + 1;
+  coupleChannelGeneration.set(coupleId, gen);
+  return `couple-sync:${coupleId}:${gen}`;
+}
+
 function teardownCoupleChannel(coupleId) {
   const entry = coupleSyncChannels.get(coupleId);
   if (!entry) return;
@@ -88,7 +106,7 @@ function scheduleCoupleChannelReconnect(coupleId, entry) {
       /* ignore */
     }
 
-    entry.channel = supabase.channel(`couple-sync:${coupleId}`, {
+    entry.channel = supabase.channel(nextCoupleChannelTopic(coupleId), {
       config: { broadcast: { self: false } },
     });
     attachCoupleChannelHandlers(entry, coupleId);
@@ -171,7 +189,7 @@ function getCoupleSyncEntry(coupleId) {
   const listeners = Object.fromEntries(REALTIME_TABLES.map((t) => [t, new Set()]));
 
   const entry = {
-    channel: supabase.channel(`couple-sync:${coupleId}`, {
+    channel: supabase.channel(nextCoupleChannelTopic(coupleId), {
       config: { broadcast: { self: false } },
     }),
     listeners,
@@ -208,6 +226,22 @@ function broadcastDataRefresh(coupleId, table) {
   entry.channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') transmit();
   });
+}
+
+/** Edge functions return structured JSON error bodies (e.g. `{ error: 'email_already_registered' }`) on non-2xx responses; unwrap them into a normal Error with `.code`/`.details` so screens can branch on it. */
+async function resolveFunctionError(error) {
+  try {
+    if (error?.context?.json) {
+      const body = await error.context.json();
+      const wrapped = new Error(body?.error ?? error.message ?? 'Request failed');
+      wrapped.code = body?.error;
+      wrapped.details = body;
+      return wrapped;
+    }
+  } catch {
+    /* fall through to generic error below */
+  }
+  return error instanceof Error ? error : new Error('Request failed');
 }
 
 // 2. Network Utility Wrapper Functions
@@ -281,6 +315,139 @@ export const networkUtility = {
     for (const coupleId of [...coupleSyncChannels.keys()]) {
       teardownCoupleChannel(coupleId);
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // Onboarding + subscription pipeline
+  // ---------------------------------------------------------------------
+
+  /** Kicks off onboarding: creates a pending couple + subscription + invites. No emails sent yet. */
+  async startOnboarding({ ownerEmail, ownerName, partnerEmail, partnerName, shipName }) {
+    const { data, error } = await supabase.functions.invoke('start-onboarding', {
+      body: { ownerEmail, ownerName, partnerEmail, partnerName, shipName },
+    });
+    if (error) throw await resolveFunctionError(error);
+    return data;
+  },
+
+  /** Dummy checkout completion. Swap this single call for a real Stripe flow later. */
+  async completeDummyPayment({ coupleId, checkoutToken, simulate }) {
+    const { data, error } = await supabase.functions.invoke('complete-dummy-payment', {
+      body: { couple_id: coupleId, checkout_token: checkoutToken, simulate },
+    });
+    if (error) throw await resolveFunctionError(error);
+    return data;
+  },
+
+  /**
+   * Establishes a session for an invited user from the emailed deep link's
+   * token_hash. `type` must match whatever the backend used to mint the
+   * link — 'invite' for a brand-new account, 'magiclink' when resend-invite
+   * regenerated a link for an already-created (but still password-less) user.
+   */
+  async verifyInviteToken({ email, tokenHash, type = 'invite' }) {
+    const { data, error } = await supabase.auth.verifyOtp({ email, token: tokenHash, type });
+    if (error) throw error;
+    return data;
+  },
+
+  /** Sets the invited user's password — they had none until this point. */
+  async setNewPassword(password) {
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) throw error;
+  },
+
+  /** Confirms invite acceptance server-side; backfills couples.partner_x_id. */
+  async finishAccountSetup() {
+    const { data, error } = await supabase.functions.invoke('finish-account-setup', { body: {} });
+    if (error) throw await resolveFunctionError(error);
+    return data;
+  },
+
+  /**
+   * Fixes a typo'd/lost invite email. Works pre-auth via { coupleId, checkoutToken }
+   * (e.g. the owner's own invite never arrived), or authenticated once the owner
+   * has already set up their own account (fixing the partner's email/link).
+   */
+  async resendInvite({ role, newEmail, coupleId, checkoutToken }) {
+    const { data, error } = await supabase.functions.invoke('resend-invite', {
+      body: { role, newEmail, couple_id: coupleId, checkout_token: checkoutToken },
+    });
+    if (error) throw await resolveFunctionError(error);
+    return data;
+  },
+
+  /** The single access gateway — call after login/session-restore, before ever rendering the Dashboard. */
+  async getAccessStatus() {
+    const { data, error } = await supabase.rpc('get_my_access_status');
+    if (error) {
+      console.error('Error fetching access status:', error.message);
+      return null;
+    }
+    return Array.isArray(data) ? data[0] ?? null : data;
+  },
+
+  /** Whether new onboarding is currently allowed — backend-controlled kill-switch, anon-readable. */
+  async isOnboardingEnabled() {
+    const { data, error } = await supabase
+      .from('app_config')
+      .select('onboarding_enabled')
+      .eq('id', true)
+      .maybeSingle();
+    if (error) {
+      console.error('Error fetching app_config:', error.message);
+      return true; // fail open — a transient error shouldn't hide onboarding entirely
+    }
+    return data?.onboarding_enabled !== false;
+  },
+
+  /** Read-only view of both invite rows for the caller's own couple (the `invites` table itself has no client access). */
+  async getOnboardingInvites() {
+    const { data, error } = await supabase.rpc('get_my_onboarding_invites');
+    if (error) {
+      console.error('Error fetching onboarding invites:', error.message);
+      return [];
+    }
+    return data ?? [];
+  },
+
+  /**
+   * Dummy "renew"/retry-payment action for a couple whose subscription has
+   * lapsed (past the grace period) or was manually canceled. Under the hood
+   * this calls the same shared state-transition helper a real Stripe retry
+   * webhook would — swap this one call out when Stripe lands.
+   */
+  async reactivateSubscription() {
+    return this.simulateSubscriptionEvent('success');
+  },
+
+  /** Dev/test-only: force the couple's subscription into past_due (with a 7-day grace period) or back to active. */
+  async simulateSubscriptionEvent(outcome) {
+    const { data, error } = await supabase.functions.invoke('simulate-subscription-event', {
+      body: { outcome },
+    });
+    if (error) throw await resolveFunctionError(error);
+    return data;
+  },
+
+  /** Updates the caller's own display name and/or the shared, cosmetic ship name. */
+  async updateMyProfile({ displayName, shipName } = {}) {
+    const { error } = await supabase.rpc('update_my_profile', {
+      p_display_name: displayName ?? null,
+      p_ship_name: shipName ?? null,
+    });
+    if (error) throw error;
+  },
+
+  /** Change-password flow (Settings screen) — re-authenticates with the current password first. */
+  async changePassword({ email, currentPassword, newPassword }) {
+    const { error: reauthError } = await supabase.auth.signInWithPassword({
+      email,
+      password: currentPassword,
+    });
+    if (reauthError) throw new Error('Current password is incorrect.');
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) throw error;
   },
 
   /**

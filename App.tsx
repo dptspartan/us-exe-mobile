@@ -6,11 +6,37 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { configureSparkNotificationHandler } from './src/lib/sparkNotifications';
 import { AppProvider, useApp } from './src/context/AppContext';
 import { MoodProvider } from './src/context/MoodContext';
-import { LoginScreen } from './src/screens/LoginScreen';
+import { useInviteDeepLink } from './src/hooks/useInviteDeepLink';
+import { AuthGateScreen } from './src/screens/AuthGateScreen';
+import { SetPasswordScreen } from './src/screens/SetPasswordScreen';
+import { WaitingForPartnerScreen } from './src/screens/WaitingForPartnerScreen';
+import { AccessBlockedScreen } from './src/screens/AccessBlockedScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 
 function Shell() {
-  const { loading, isAuthenticated, isPaired } = useApp();
+  const { loading, isAuthenticated, isPaired, onboardingStatus, accessStatusLoading, accessAllowed } = useApp();
+  const inviteLink = useInviteDeepLink();
+
+  if (inviteLink.status === 'verifying') {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#ec4899" />
+        <Text style={styles.hint}>Opening your invite…</Text>
+      </View>
+    );
+  }
+
+  if (inviteLink.status === 'error') {
+    return (
+      <View style={[styles.center, { paddingHorizontal: 28 }]}>
+        <Text style={styles.errTitle}>Invite link problem</Text>
+        <Text style={styles.errBody}>{inviteLink.error}</Text>
+        <Text onPress={inviteLink.dismiss} style={styles.errRetry}>
+          Dismiss
+        </Text>
+      </View>
+    );
+  }
 
   if (loading) {
     return (
@@ -22,18 +48,32 @@ function Shell() {
   }
 
   if (!isAuthenticated) {
-    return <LoginScreen />;
+    return <AuthGateScreen />;
   }
 
+  // Authenticated but no couple row matches yet: either a brand-new invited
+  // user who hasn't set a password/finished setup, or (rare) a genuinely
+  // orphaned account. SetPasswordScreen handles both, since it's derived
+  // purely from live session + couple state — no flag needs to survive an
+  // app restart mid-invite-flow.
   if (!isPaired) {
+    return <SetPasswordScreen />;
+  }
+
+  if (onboardingStatus && onboardingStatus !== 'active') {
+    return <WaitingForPartnerScreen />;
+  }
+
+  if (accessStatusLoading) {
     return (
-      <View style={[styles.center, { paddingHorizontal: 28 }]}>
-        <Text style={styles.errTitle}>No couple profile</Text>
-        <Text style={styles.errBody}>
-          This account must appear in your Supabase `couples` table (same as the web app). Pair both partner IDs, then relaunch.
-        </Text>
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#ec4899" />
       </View>
     );
+  }
+
+  if (!accessAllowed) {
+    return <AccessBlockedScreen />;
   }
 
   return <DashboardScreen />;
@@ -64,4 +104,5 @@ const styles = StyleSheet.create({
   hint: { marginTop: 14, fontSize: 12, color: '#71717a', fontWeight: '600' },
   errTitle: { fontSize: 18, fontWeight: '900', color: '#fafafa', marginBottom: 12, textAlign: 'center' },
   errBody: { fontSize: 14, lineHeight: 22, color: '#a1a1aa', textAlign: 'center' },
+  errRetry: { marginTop: 20, fontSize: 13, fontWeight: '800', color: '#ec4899' },
 });

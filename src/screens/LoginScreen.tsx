@@ -12,7 +12,11 @@ import {
 import { networkUtility } from '../api/network';
 import { useApp } from '../context/AppContext';
 
-export function LoginScreen() {
+type Props = {
+  onStartOnboarding?: () => void;
+};
+
+export function LoginScreen({ onStartOnboarding }: Props) {
   const { isAuthenticated, isPaired, loading } = useApp();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -80,6 +84,12 @@ export function LoginScreen() {
         >
           {busy ? <ActivityIndicator color="#111" /> : <Text style={styles.btnTxt}>Authorize</Text>}
         </Pressable>
+
+        {onStartOnboarding ? (
+          <Pressable onPress={onStartOnboarding} style={styles.linkBtn}>
+            <Text style={styles.linkTxt}>New here? Onboard your couple</Text>
+          </Pressable>
+        ) : null}
       </View>
     </KeyboardAvoidingView>
   );
@@ -118,4 +128,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#e4e4e7',
   },
   btnTxt: { fontWeight: '900', fontSize: 12, letterSpacing: 3, textTransform: 'uppercase', color: '#0a0a0c' },
+  linkBtn: { marginTop: 16, alignItems: 'center', paddingVertical: 8 },
+  linkTxt: { color: '#a1a1aa', fontSize: 12, fontWeight: '700' },
 });

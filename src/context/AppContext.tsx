@@ -4,15 +4,26 @@ import React, {
   useEffect,
   useMemo,
   useState,
+  useCallback,
 } from 'react';
 import { AppState } from 'react-native';
 import { networkUtility } from '../api/network';
 import { supabase } from '../lib/supabase';
+import { dataCache, cacheKeys } from '../cache/dataCache';
 import {
   getPushRegistrationState,
   startPushRegistration,
   stopPushRegistration,
 } from '../lib/pushTokens';
+
+export type AccessStatus = {
+  couple_id: string;
+  onboarding_status: string;
+  access_allowed: boolean;
+  subscription_status: string | null;
+  grace_period_ends_at: string | null;
+  reminder_active: boolean;
+};
 
 export type AppCtx = {
   user: { id: string; email?: string } | null;
@@ -22,6 +33,14 @@ export type AppCtx = {
   loading: boolean;
   isAuthenticated: boolean;
   isPaired: boolean;
+  onboardingStatus: string | null;
+  accessStatus: AccessStatus | null;
+  accessStatusLoading: boolean;
+  accessAllowed: boolean;
+  reminderActive: boolean;
+  gracePeriodEndsAt: string | null;
+  refreshCoupleProfile: () => Promise<void>;
+  refreshAccessStatus: () => Promise<void>;
 };
 
 const AppContext = createContext<AppCtx | undefined>(undefined);
@@ -33,6 +52,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const [hydrated, setHydrated] = useState(false);
   const [initializing, setInitializing] = useState(true);
+  const [accessStatus, setAccessStatus] = useState<AccessStatus | null>(null);
+  const [accessStatusLoading, setAccessStatusLoading] = useState(false);
 
   const partnerId =
     coupleProfile && user?.id
@@ -64,10 +85,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  const fetchCoupleProfile = useCallback(async (userId: string) => {
+    const profile = await networkUtility.getCoupleProfile(userId);
+    setCoupleProfile(profile as Record<string, unknown> | null);
+    return profile as { id?: string } | null;
+  }, []);
+
   useEffect(() => {
     if (!hydrated) return;
     if (!user?.id) {
       setCoupleProfile(null);
+      setAccessStatus(null);
       setInitializing(false);
       return;
     }
@@ -76,10 +104,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setInitializing(true);
     void (async () => {
       try {
-        const profile = await networkUtility.getCoupleProfile(user.id);
+        const profile = await fetchCoupleProfile(user.id);
         if (cancelled) return;
-        setCoupleProfile(profile as Record<string, unknown> | null);
-        const id = (profile as { id?: string } | null)?.id;
+        const id = profile?.id;
         if (id) {
           await networkUtility.prefetchCoupleData(id, user.id);
         }
@@ -93,7 +120,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, user?.id]);
+  }, [hydrated, user?.id, fetchCoupleProfile]);
+
+  const coupleId = (coupleProfile?.id as string) ?? null;
+  const onboardingStatus = (coupleProfile?.onboarding_status as string) ?? null;
+
+  const refreshAccessStatus = useCallback(async () => {
+    if (!coupleId) {
+      setAccessStatus(null);
+      return;
+    }
+    setAccessStatusLoading(true);
+    try {
+      const status = await networkUtility.getAccessStatus();
+      setAccessStatus(status as AccessStatus | null);
+    } finally {
+      setAccessStatusLoading(false);
+    }
+  }, [coupleId]);
+
+  const refreshCoupleProfile = useCallback(async () => {
+    if (!user?.id) return;
+    await dataCache.invalidate(cacheKeys.coupleProfile(user.id));
+    await fetchCoupleProfile(user.id);
+  }, [user?.id, fetchCoupleProfile]);
+
+  // Only meaningful once a couple has fully onboarded (source of truth for
+  // whether the Dashboard should even be reachable).
+  useEffect(() => {
+    if (!coupleId || onboardingStatus !== 'active') {
+      setAccessStatus(null);
+      return;
+    }
+    void refreshAccessStatus();
+  }, [coupleId, onboardingStatus, refreshAccessStatus]);
 
   useEffect(() => {
     if (!user?.id || !coupleProfile) {
@@ -105,14 +165,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (state === 'active' && getPushRegistrationState().status !== 'saved') {
         startPushRegistration(user.id);
       }
+      if (state === 'active' && onboardingStatus === 'active') {
+        void refreshAccessStatus();
+      }
     });
     return () => {
       sub.remove();
       stopPushRegistration();
     };
-  }, [user?.id, coupleProfile]);
-
-  const coupleId = (coupleProfile?.id as string) ?? null;
+  }, [user?.id, coupleProfile, onboardingStatus, refreshAccessStatus]);
 
   const value = useMemo(
     (): AppCtx => ({
@@ -123,8 +184,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       loading: !hydrated || initializing,
       isAuthenticated: !!user,
       isPaired: !!coupleProfile,
+      onboardingStatus,
+      accessStatus,
+      accessStatusLoading,
+      accessAllowed: accessStatus ? accessStatus.access_allowed : true,
+      reminderActive: accessStatus?.reminder_active ?? false,
+      gracePeriodEndsAt: accessStatus?.grace_period_ends_at ?? null,
+      refreshCoupleProfile,
+      refreshAccessStatus,
     }),
-    [user, coupleProfile, partnerId, hydrated, initializing, coupleId]
+    [
+      user,
+      coupleProfile,
+      partnerId,
+      hydrated,
+      initializing,
+      coupleId,
+      onboardingStatus,
+      accessStatus,
+      accessStatusLoading,
+      refreshCoupleProfile,
+      refreshAccessStatus,
+    ]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -64,6 +64,14 @@
     "notification": {
       "color": "#ec4899"
     },
-    "extra": {}
+    "extra": {
+      "supabaseUrl": "https://pmthoctmhjilhhduvkpt.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBtdGhvY3RtaGppbGhoZHV2a3B0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5MzAyNTgsImV4cCI6MjA5NDUwNjI1OH0.FHW5-Cwwx5oZ-V2knPLB8LyR3dLw81mqzmrkvr9MTdQ",
+      "expoCredentialsUrl": "https://expo.dev/accounts/dptspartan/projects/us-exe-mobile/credentials",
+      "appEnv": "production",
+      "eas": {
+        "projectId": "ef0ca527-53b7-4e6a-bde9-afde99890794"
+      }
+    }
   }
 }

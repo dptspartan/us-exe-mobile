@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { networkUtility } from '../api/network';
 import { useApp } from '../context/AppContext';
 import { useMood } from '../context/MoodContext';
+import { SettingsScreen } from './SettingsScreen';
+import { ReminderModal } from '../components/ReminderModal';
 import { SparksProvider } from '../context/SparksContext';
 import { useVibeTheme } from '../hooks/useVibeTheme';
 import { usePushDeepLink } from '../hooks/usePushDeepLink';
@@ -38,6 +41,7 @@ export function DashboardScreen() {
 
   const [session, setSession] = useState<SessionId>('desk');
   const [names, setNames] = useState({ myName: 'You', partnerName: 'Partner' });
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   const openSparks = useCallback((id: SessionId) => setSession(id), []);
   usePushDeepLink(openSparks);
@@ -96,6 +100,14 @@ export function DashboardScreen() {
                   {names.partnerName}
                 </Text>
               </View>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setSettingsVisible(true)}
+                style={styles.gear}
+                hitSlop={10}
+              >
+                <Ionicons name="settings-outline" size={16} color={hexAlpha(text, 0.75)} />
+              </Pressable>
               <Pressable accessibilityRole="button" onPress={signOut} style={styles.bye}>
                 <Text style={styles.byeTxt}>Bye</Text>
               </Pressable>
@@ -122,6 +134,8 @@ export function DashboardScreen() {
         <FloatingHeartsOverlay />
         <HugRequestModal />
         <StickyNotesTray partnerName={names.partnerName} />
+        <ReminderModal />
+        <SettingsScreen visible={settingsVisible} onClose={() => setSettingsVisible(false)} />
       </View>
     </SparksProvider>
   );
@@ -142,6 +156,16 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 18, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 },
   amp: { fontWeight: '300', fontStyle: 'italic', fontSize: 16, textTransform: 'none' },
+  gear: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
   bye: {
     paddingHorizontal: 14,
     paddingVertical: 8,

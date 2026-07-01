@@ -86,6 +86,13 @@ if ((profile === 'preview' || profile === 'production') && !prodProjectId) {
 
 const environment = PROFILE_TO_ENV[profile];
 
+// app.config.js branches on APP_ENV to pick the dev vs. prod slug/bundle id/
+// EAS project id. `expo start` sets this inline (see package.json's
+// start:dev script); this script must do the same before shelling out to
+// eas-cli, or eas-cli resolves app.config.js as production (wrong slug,
+// wrong/missing EAS project id) regardless of which .env file we loaded.
+process.env.APP_ENV = environment;
+
 console.log(`[eas-build] Pushing ${envFile} → EAS "${environment}" environment...`);
 run('npx', ['eas-cli', 'env:push', environment, '--path', envFile, '--force']);
 
