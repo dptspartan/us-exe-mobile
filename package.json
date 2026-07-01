@@ -3,14 +3,17 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/react-native-skia": "2.2.12",
     "@supabase/supabase-js": "^2.106.1",
     "babel-preset-expo": "~54.0.10",
-    "expo": "~54.0.0",
+    "expo": "~54.0.35",
     "expo-blur": "~15.0.8",
     "expo-build-properties": "~1.0.10",
     "expo-constants": "~18.0.13",
+    "expo-crypto": "~15.0.9",
     "expo-dev-client": "~6.0.21",
     "expo-device": "~8.0.10",
     "expo-file-system": "~19.0.23",
@@ -31,20 +34,24 @@
   "devDependencies": {
     "@types/react": "~19.1.10",
     "eas-cli": "^19.0.8",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vitest": "^3.2.4"
   },
   "scripts": {
     "start": "expo start",
-    "start:dev": "expo start --dev-client",
+    "start:dev": "DOTENV_CONFIG_PATH=.env.dev APP_ENV=development expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "eas:dev:android": "eas build --profile development --platform android",
-    "eas:dev:ios": "eas build --profile development --platform ios",
-    "eas:preview:android": "eas build --profile preview --platform android",
-    "eas:preview:android:clean": "eas build --profile preview --platform android --clear-cache",
+    "test": "vitest run",
+    "eas:init:dev": "node scripts/eas-init-dev.cjs",
+    "eas:dev:android": "node scripts/eas-build.cjs development --platform android",
+    "eas:dev:ios": "node scripts/eas-build.cjs development --platform ios",
+    "eas:preview:android": "node scripts/eas-build.cjs preview --platform android",
+    "eas:preview:android:clean": "node scripts/eas-build.cjs preview --platform android --clear-cache",
+    "eas:prod:android": "node scripts/eas-build.cjs production --platform android",
     "android:uninstall": "adb uninstall com.anonymous.usexemobile || adb shell pm uninstall --user 0 com.anonymous.usexemobile",
-    "eas:prod:android": "eas build --profile production --platform android"
+    "android:uninstall:dev": "adb uninstall com.anonymous.usexemobile.dev || adb shell pm uninstall --user 0 com.anonymous.usexemobile.dev"
   },
   "private": true
 }

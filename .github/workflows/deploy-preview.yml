@@ -60,18 +60,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Create .env for EAS build
+      - name: Run unit tests
+        run: npm test
+
+      - name: Prepare Supabase env for EAS build
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+          EXPO_OWNER: ${{ secrets.EXPO_OWNER }}
         run: |
-          printf 'EXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_ANON_KEY=%s\n' \
-            "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_ANON_KEY" > .env
+          if [[ -z "$EXPO_PUBLIC_SUPABASE_URL" || -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]]; then
+            echo "::error::GitHub secrets EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY must be set (Settings → Secrets → Actions)."
+            exit 1
+          fi
+          if [[ -z "$EAS_PROJECT_ID" ]]; then
+            echo "::error::GitHub secret EAS_PROJECT_ID must be set (production EAS project UUID)."
+            exit 1
+          fi
+          printf 'EXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_ANON_KEY=%s\nEAS_PROJECT_ID=%s\nEXPO_OWNER=%s\n' \
+            "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_ANON_KEY" "$EAS_PROJECT_ID" "$EXPO_OWNER" > .env.prod
+          node scripts/check-eas-env.cjs .env.prod
+          npx eas-cli env:push preview --path .env.prod --force
 
       - name: Build preview APK on EAS
         id: eas
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EXPO_OWNER: ${{ secrets.EXPO_OWNER }}
         run: |
           set -euo pipefail
           MESSAGE="Release ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref_name }} (${{ steps.version.outputs.value }})"
@@ -93,7 +111,12 @@ jobs:
 
           BUILD_ID=$(jq -r '.[0].id' build-output.json)
           INSTALL_URL=$(jq -r '.[0].artifacts.buildUrl // .[0].artifacts.applicationArchiveUrl // empty' build-output.json)
-          BUILD_PAGE="https://expo.dev/accounts/dptspartan/projects/us-exe-mobile/builds/${BUILD_ID}"
+          PROJECT_SLUG=$(jq -r '.expo.slug' app.json)
+          EXPO_ACCOUNT="${EXPO_OWNER:-}"
+          if [[ -z "$EXPO_ACCOUNT" ]]; then
+            echo "::warning::EXPO_OWNER secret not set — build page link may be incomplete."
+          fi
+          BUILD_PAGE="https://expo.dev/accounts/${EXPO_ACCOUNT}/projects/${PROJECT_SLUG}/builds/${BUILD_ID}"
 
           if [[ -z "$INSTALL_URL" ]]; then
             echo "::warning::No direct install URL in build artifacts; using Expo build page."

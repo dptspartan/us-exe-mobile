@@ -1,0 +1,61 @@
+name: Deploy dev APK (EAS)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: eas-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Prepare dev Supabase env for EAS build
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV }}
+          EAS_PROJECT_ID_DEV: ${{ secrets.EAS_PROJECT_ID_DEV }}
+          EXPO_OWNER: ${{ secrets.EXPO_OWNER }}
+        run: |
+          if [[ -z "$EXPO_PUBLIC_SUPABASE_URL" || -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]]; then
+            echo "::error::GitHub secrets EXPO_PUBLIC_SUPABASE_URL_DEV and EXPO_PUBLIC_SUPABASE_ANON_KEY_DEV must be set."
+            exit 1
+          fi
+          if [[ -z "$EAS_PROJECT_ID_DEV" ]]; then
+            echo "::error::GitHub secret EAS_PROJECT_ID_DEV must be set (run npm run eas:init:dev locally once)."
+            exit 1
+          fi
+          printf 'EXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_ANON_KEY=%s\nEAS_PROJECT_ID_DEV=%s\nEXPO_OWNER=%s\n' \
+            "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_ANON_KEY" "$EAS_PROJECT_ID_DEV" "$EXPO_OWNER" > .env.dev
+          npx eas-cli env:push development --path .env.dev --force
+
+      - name: Build development APK on EAS
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx eas-cli build \
+            --profile development \
+            --platform android \
+            --non-interactive \
+            --wait

@@ -27,7 +27,10 @@
         {
           "android": {
             "minSdkVersion": 24,
-            "buildArchs": ["armeabi-v7a", "arm64-v8a"]
+            "buildArchs": [
+              "armeabi-v7a",
+              "arm64-v8a"
+            ]
           }
         }
       ],
@@ -61,11 +64,6 @@
     "notification": {
       "color": "#ec4899"
     },
-    "extra": {
-      "eas": {
-        "projectId": "ef0ca527-53b7-4e6a-bde9-afde99890794"
-      }
-    },
-    "owner": "dptspartan"
+    "extra": {}
   }
 }

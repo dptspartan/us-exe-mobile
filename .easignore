@@ -45,5 +45,4 @@ yarn-error.*
 
 # Firebase service account (upload to Expo only — never commit)
 *firebase-adminsdk*.json
-google-services.dev.json
-google-services.json
+
